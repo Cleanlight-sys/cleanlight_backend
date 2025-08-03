@@ -9,8 +9,6 @@ import base64
 app = Flask(__name__)
 
 # --- Load Supabase credentials from environment ---
-import os
-
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
@@ -56,6 +54,24 @@ def supa_update():
     url = f"{SUPABASE_URL}/rest/v1/{table}?{match_column}=eq.{match_value}"
     r = requests.patch(url, headers=HEADERS, json=update_data)
     return (r.text, r.status_code, r.headers.items())
+
+# NEW ENDPOINT: updateRowWithBody for easier Action integration
+@app.route('/supa/update_body', methods=['POST'])
+def supa_update_body():
+    table = request.args.get('table')
+    match_column = request.args.get('col')
+    match_value = request.args.get('val')
+    if not (table and match_column and match_value):
+        return jsonify({"error": "Missing params"}), 400
+    update_data = request.json
+    if not update_data:
+        return jsonify({"error": "Missing update body"}), 400
+    url = f"{SUPABASE_URL}/rest/v1/{table}?{match_column}=eq.{match_value}"
+    r = requests.patch(url, headers=HEADERS, json=update_data)
+    try:
+        return jsonify(r.json()), r.status_code
+    except Exception:
+        return (r.text, r.status_code, r.headers.items())
 
 @app.route('/supa/delete', methods=['DELETE'])
 def supa_delete():
@@ -111,13 +127,13 @@ def baseN_to_int(s, alphabet):
 
 # --- Arithmetic coding using MIT 'arithmeticcoding' lib ---
 def compress_arithmetic(data):
-    freq = SimpleFrequencyTable([1]*257)  # 256 bytes + EOF
+    freq = SimpleFrequencyTable([1]*257)
     out = io.BytesIO()
     enc = ArithmeticEncoder(32, out)
     for b in data:
         enc.write(freq, b)
         freq.increment(b)
-    enc.write(freq, 256)  # EOF symbol
+    enc.write(freq, 256)
     enc.finish()
     return out.getvalue()
 
@@ -176,10 +192,8 @@ def encode10k():
     if not content or 'data' not in content:
         return jsonify({'error': 'Missing data'}), 400
     raw = content['data']
-    # If text, must first convert to bytes
     if isinstance(raw, str):
         try:
-            # Try to decode as base64 first (for binary agent clients)
             raw = base64.b64decode(raw)
         except Exception:
             raw = raw.encode('utf-8')
@@ -201,7 +215,6 @@ def decode10k():
     compressed = as_int.to_bytes(num_bytes, 'big')
     try:
         raw = decompress_arithmetic(compressed)
-        # Return as base64 for binary/image safety
         b64 = base64.b64encode(raw).decode('utf-8')
         return jsonify({'data': b64})
     except Exception as e:
@@ -214,4 +227,3 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-

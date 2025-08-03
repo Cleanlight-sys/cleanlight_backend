@@ -5,8 +5,10 @@ import unicodedata
 import io
 from arithmeticcoding import ArithmeticEncoder, ArithmeticDecoder, SimpleFrequencyTable
 import base64
+import logging
 
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
 
 # --- Load Supabase credentials from environment ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -19,6 +21,18 @@ HEADERS = {
     "Accept": "application/json"
 }
 
+@app.before_request
+def log_and_merge():
+    """Log every request and merge query/body for resilience."""
+    app.logger.info(f"{request.method} {request.path} args={dict(request.args)} body={request.get_data(as_text=True)}")
+    if request.method in ['POST', 'PATCH']:
+        try:
+            body = request.get_json(force=True, silent=True) or {}
+            merged = {**request.args.to_dict(), **body}
+            request.merged_json = merged
+        except Exception:
+            request.merged_json = request.args.to_dict()
+
 # --- SUPABASE CRUD ENDPOINTS ---
 @app.route('/supa/select', methods=['GET'])
 def supa_select():
@@ -29,7 +43,7 @@ def supa_select():
     r = requests.get(url, headers=HEADERS)
     try:
         data = r.json()
-        return jsonify(data), r.status_code
+        return jsonify({"data": data or []}), r.status_code
     except Exception as e:
         return jsonify({"error": "Bad JSON", "raw": r.text}), 500
 
@@ -38,7 +52,7 @@ def supa_insert():
     table = request.args.get('table')
     if not table:
         return jsonify({"error": "Missing table"}), 400
-    row = request.json
+    row = getattr(request, "merged_json", request.json)
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     r = requests.post(url, headers=HEADERS, json=row)
     return (r.text, r.status_code, r.headers.items())
@@ -50,28 +64,25 @@ def supa_update():
     match_value = request.args.get('val')
     if not (table and match_column and match_value):
         return jsonify({"error": "Missing params"}), 400
-    update_data = request.json
+    update_data = getattr(request, "merged_json", request.json)
     url = f"{SUPABASE_URL}/rest/v1/{table}?{match_column}=eq.{match_value}"
     r = requests.patch(url, headers=HEADERS, json=update_data)
     return (r.text, r.status_code, r.headers.items())
 
-# NEW ENDPOINT: updateRowWithBody for easier Action integration
 @app.route('/supa/update_body', methods=['POST'])
 def supa_update_body():
-    table = request.args.get('table')
-    match_column = request.args.get('col')
-    match_value = request.args.get('val')
+    table = request.args.get('table') or request.merged_json.get('table')
+    match_column = request.args.get('col') or request.merged_json.get('col')
+    match_value = request.args.get('val') or request.merged_json.get('val')
     if not (table and match_column and match_value):
         return jsonify({"error": "Missing params"}), 400
-    update_data = request.json
-    if not update_data:
-        return jsonify({"error": "Missing update body"}), 400
+    update_data = request.merged_json
     url = f"{SUPABASE_URL}/rest/v1/{table}?{match_column}=eq.{match_value}"
     r = requests.patch(url, headers=HEADERS, json=update_data)
     try:
-        return jsonify(r.json()), r.status_code
+        return jsonify({"success": True, "updated_row": r.json()}), r.status_code
     except Exception:
-        return (r.text, r.status_code, r.headers.items())
+        return jsonify({"success": True, "raw": r.text}), r.status_code
 
 @app.route('/supa/delete', methods=['DELETE'])
 def supa_delete():
@@ -106,7 +117,6 @@ def get_base_alphabet(n):
             break
     return ''.join(safe)
 
-# --- Integer/baseN conversion ---
 def int_to_baseN(num, alphabet):
     if num == 0:
         return alphabet[0]
@@ -125,7 +135,6 @@ def baseN_to_int(s, alphabet):
         num = num * base + alpha_map[ch]
     return num
 
-# --- Arithmetic coding using MIT 'arithmeticcoding' lib ---
 def compress_arithmetic(data):
     freq = SimpleFrequencyTable([1]*257)
     out = io.BytesIO()
@@ -150,7 +159,6 @@ def decompress_arithmetic(data):
         freq.increment(sym)
     return bytes(out_bytes)
 
-# --- base1k (text) endpoints ---
 @app.route('/encode1k', methods=['POST'])
 def encode1k():
     content = request.get_json()
@@ -185,7 +193,6 @@ def decode1k():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# --- base10k (image/binary) endpoints ---
 @app.route('/encode10k', methods=['POST'])
 def encode10k():
     content = request.get_json()
@@ -220,7 +227,6 @@ def decode10k():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-# --- Health check endpoint ---
 @app.route('/')
 def index():
     return "Cleanlight Key Master API is live.", 200

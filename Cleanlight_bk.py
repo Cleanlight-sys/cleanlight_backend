@@ -64,7 +64,9 @@ def supa_update():
     match_value = request.args.get('val')
     if not (table and match_column and match_value):
         return jsonify({"error": "Missing params"}), 400
-    update_data = getattr(request, "merged_json", request.json)
+    raw = getattr(request, "merged_json", request.json)
+    # The incoming JSON will be {"fields": { ... }}
+    update_data = raw.get("fields", {}) if raw else {}
     url = f"{SUPABASE_URL}/rest/v1/{table}?{match_column}=eq.{match_value}"
     r = requests.patch(url, headers=HEADERS, json=update_data)
     return (r.text, r.status_code, r.headers.items())
@@ -233,3 +235,4 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+

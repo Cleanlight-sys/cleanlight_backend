@@ -9,8 +9,10 @@ import base64
 app = Flask(__name__)
 
 # --- Load Supabase credentials from environment ---
-SUPABASE_URL = os.getenv("https://ogmavmudmlbxtbwzprdm.supabase.co")
-SUPABASE_KEY = os.getenv("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9nbWF2bXVkbWxieHRid3pwcmRtIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQxNTYwMDIsImV4cCI6MjA2OTczMjAwMn0._0KtOq5z3Y55QQjZi0BeSIw4HEgjm7Ogfr2D91iGavE")
+import os
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -212,3 +214,4 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+

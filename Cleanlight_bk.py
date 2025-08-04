@@ -3,7 +3,7 @@ import requests
 import os
 import unicodedata
 import io
-from arithmeticcoding import ArithmeticEncoder, ArithmeticDecoder, SimpleFrequencyTable
+import zstandard as zstd
 import base64
 import logging
 
@@ -20,6 +20,7 @@ HEADERS = {
     "Accept": "application/json"
 }
 
+# ------------------ LOGGING & MERGE ------------------
 @app.before_request
 def log_and_merge():
     app.logger.info(f"{request.method} {request.path} args={dict(request.args)} body={request.get_data(as_text=True)}")
@@ -31,7 +32,7 @@ def log_and_merge():
         except Exception:
             request.merged_json = request.args.to_dict()
 
-# ------------------- SMART 1K HELPERS -------------------
+# ------------------ BASE ALPHABETS ------------------
 def get_base_alphabet(n):
     safe = []
     for codepoint in range(0x20, 0x2FFFF):
@@ -53,6 +54,21 @@ def get_base_alphabet(n):
             break
     return ''.join(safe)
 
+BASE1K = get_base_alphabet(1000)
+BASE10K = get_base_alphabet(10000)
+
+# ------------------ ENCODING/DECODING HELPERS ------------------
+
+def encode_smart64(plaintext: str) -> str:
+    cctx = zstd.ZstdCompressor()
+    compressed = cctx.compress(plaintext.encode('utf-8'))
+    return base64.b64encode(compressed).decode('ascii')
+
+def decode_smart64(smart64_str: str) -> str:
+    compressed = base64.b64decode(smart64_str)
+    dctx = zstd.ZstdDecompressor()
+    return dctx.decompress(compressed).decode('utf-8')
+
 def int_to_baseN(num, alphabet):
     if num == 0:
         return alphabet[0]
@@ -71,56 +87,78 @@ def baseN_to_int(s, alphabet):
         num = num * base + alpha_map[ch]
     return num
 
-def compress_arithmetic(data):
-    freq = SimpleFrequencyTable([1]*257)
-    out = io.BytesIO()
-    enc = ArithmeticEncoder(32, out)
-    for b in data:
-        enc.write(freq, b)
-        freq.increment(b)
-    enc.write(freq, 256)
-    enc.finish()
-    return out.getvalue()
-
-def decompress_arithmetic(data):
-    freq = SimpleFrequencyTable([1]*257)
-    inp = io.BytesIO(data)
-    dec = ArithmeticDecoder(32, inp)
-    out_bytes = []
-    while True:
-        sym = dec.read(freq)
-        if sym == 256:
-            break
-        out_bytes.append(sym)
-        freq.increment(sym)
-    return bytes(out_bytes)
-
-def encode_smart_1k(value):
-    if not isinstance(value, str):
-        value = str(value)
-    compressed = compress_arithmetic(value.encode('utf-8'))
+def encode_std1k(plaintext: str) -> str:
+    cctx = zstd.ZstdCompressor()
+    compressed = cctx.compress(plaintext.encode('utf-8'))
     as_int = int.from_bytes(compressed, 'big')
-    return int_to_baseN(as_int, get_base_alphabet(1000))
+    return int_to_baseN(as_int, BASE1K)
 
-def decode_smart_1k(value):
-    try:
-        as_int = baseN_to_int(value, get_base_alphabet(1000))
-        num_bytes = (as_int.bit_length() + 7) // 8
-        compressed = as_int.to_bytes(num_bytes, 'big')
-        return decompress_arithmetic(compressed).decode('utf-8')
-    except Exception:
-        return value
+def decode_std1k(std1k_str: str) -> str:
+    as_int = baseN_to_int(std1k_str, BASE1K)
+    num_bytes = (as_int.bit_length() + 7) // 8
+    compressed = as_int.to_bytes(num_bytes, 'big')
+    dctx = zstd.ZstdDecompressor()
+    return dctx.decompress(compressed).decode('utf-8')
+
+def encode_std10k(image_bytes: bytes) -> str:
+    cctx = zstd.ZstdCompressor()
+    compressed = cctx.compress(image_bytes)
+    as_int = int.from_bytes(compressed, 'big')
+    return int_to_baseN(as_int, BASE10K)
+
+def decode_std10k(std10k_str: str) -> bytes:
+    as_int = baseN_to_int(std10k_str, BASE10K)
+    num_bytes = (as_int.bit_length() + 7) // 8
+    compressed = as_int.to_bytes(num_bytes, 'big')
+    dctx = zstd.ZstdDecompressor()
+    return dctx.decompress(compressed)
+
+# ------------------ FIELD PROCESSING ------------------
 
 def process_fields(data, encode=True):
     processed = {}
     for key, val in data.items():
         if key == "cognition":
-            processed[key] = val  # leave cognition uncompressed
+            processed[key] = val  # Always plain text
+        elif key == "images" and val is not None:
+            if encode:
+                # Accepts Smart64 for images, store as STD10K
+                if isinstance(val, str):
+                    # If sent as Smart64 string, decode to bytes
+                    image_bytes = base64.b64decode(val)
+                else:
+                    image_bytes = val
+                processed[key] = encode_std10k(image_bytes)
+            else:
+                processed[key] = val
+        elif key in ("mir", "codex", "insight") and val is not None:
+            if encode:
+                # Accepts Smart64, decode to plaintext, store as STD1K
+                plaintext = decode_smart64(val)
+                processed[key] = encode_std1k(plaintext)
+            else:
+                processed[key] = val
         else:
-            processed[key] = encode_smart_1k(val) if encode else val
+            processed[key] = val
     return processed
 
-# ------------------- SUPABASE CRUD -------------------
+def decode_row_for_api(row):
+    # For API output, convert STD1K/STD10K fields to Smart64
+    for key in row:
+        if key == "cognition":
+            continue  # Always plain text
+        elif key == "images" and row[key]:
+            # Decode STD10K to bytes, encode as Smart64 (base64 of decompressed bytes)
+            image_bytes = decode_std10k(row[key])
+            row[key] = base64.b64encode(image_bytes).decode('ascii')
+        elif key in ("mir", "codex", "insight") and row[key]:
+            # Decode STD1K to text, then encode as Smart64
+            plaintext = decode_std1k(row[key])
+            row[key] = encode_smart64(plaintext)
+    return row
+
+# ------------------ SUPABASE CRUD ------------------
+
 @app.route('/supa/select', methods=['GET'])
 def supa_select():
     table = request.args.get('table')
@@ -132,11 +170,19 @@ def supa_select():
     data = r.json()
 
     if decode_flag:
+        # Human-readable: decode STD1K/STD10K to plaintext
         for row in data:
-            for key, val in row.items():
-                if isinstance(val, str) and key != "cognition":
-                    row[key] = decode_smart_1k(val)
-
+            for key in row:
+                if key == "cognition":
+                    continue
+                elif key == "images" and row[key]:
+                    row[key] = decode_std10k(row[key])
+                elif key in ("mir", "codex", "insight") and row[key]:
+                    row[key] = decode_std1k(row[key])
+    else:
+        # For API: convert to Smart64 where appropriate
+        for row in data:
+            row = decode_row_for_api(row)
     return jsonify({"data": data or []}), r.status_code
 
 @app.route('/supa/insert', methods=['POST'])
@@ -175,9 +221,35 @@ def supa_delete():
     r = requests.delete(url, headers=HEADERS)
     return (r.text, r.status_code, r.headers.items())
 
+# ------------------ HUMAN-READABLE DECODERS ------------------
+
+@app.route('/decode1k', methods=['POST'])
+def decode1k():
+    req = request.get_json(force=True)
+    value = req.get('encoded')
+    if not value:
+        return jsonify({"error": "Missing encoded value"}), 400
+    try:
+        decoded = decode_std1k(value)
+        return jsonify({"decoded": decoded}), 200
+    except Exception as e:
+        return jsonify({"error": f"Failed to decode: {str(e)}"}), 400
+
+@app.route('/decode_std64', methods=['POST'])
+def decode_std64():
+    req = request.get_json(force=True)
+    value = req.get('encoded')
+    if not value:
+        return jsonify({"error": "Missing encoded value"}), 400
+    try:
+        decoded = decode_smart64(value)
+        return jsonify({"decoded": decoded}), 200
+    except Exception as e:
+        return jsonify({"error": f"Failed to decode: {str(e)}"}), 400
+
 @app.route('/')
 def index():
-    return "Cleanlight Key Master API with SMART_1K compression is live.", 200
+    return "Cleanlight 2.0 Smart64/STDxK API is live.", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

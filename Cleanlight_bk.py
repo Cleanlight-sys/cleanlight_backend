@@ -59,16 +59,6 @@ BASE10K = get_base_alphabet(10000)
 
 # ------------------ ENCODING/DECODING HELPERS ------------------
 
-def encode_smart64(plaintext: str) -> str:
-    cctx = zstd.ZstdCompressor()
-    compressed = cctx.compress(plaintext.encode('utf-8'))
-    return base64.b64encode(compressed).decode('ascii')
-
-def decode_smart64(smart64_str: str) -> str:
-    compressed = base64.b64decode(smart64_str)
-    dctx = zstd.ZstdDecompressor()
-    return dctx.decompress(compressed).decode('utf-8')
-
 def int_to_baseN(num, alphabet):
     if num == 0:
         return alphabet[0]
@@ -122,9 +112,8 @@ def process_fields(data, encode=True):
             processed[key] = val  # Always plain text
         elif key == "images" and val is not None:
             if encode:
-                # Accepts Smart64 for images, store as STD10K
+                # Accepts base64 for images, store as STD10K
                 if isinstance(val, str):
-                    # If sent as Smart64 string, decode to bytes
                     image_bytes = base64.b64decode(val)
                 else:
                     image_bytes = val
@@ -133,9 +122,8 @@ def process_fields(data, encode=True):
                 processed[key] = val
         elif key in ("mir", "codex", "insight") and val is not None:
             if encode:
-                # Accepts Smart64, decode to plaintext, store as STD1K
-                plaintext = decode_smart64(val)
-                processed[key] = encode_std1k(plaintext)
+                # Accept plain text for all, store as STD1K
+                processed[key] = encode_std1k(val)
             else:
                 processed[key] = val
         else:
@@ -143,18 +131,17 @@ def process_fields(data, encode=True):
     return processed
 
 def decode_row_for_api(row):
-    # For API output, convert STD1K/STD10K fields to Smart64
+    # For API output, convert STD1K/STD10K fields to base64/plaintext
     for key in row:
         if key == "cognition":
             continue  # Always plain text
         elif key == "images" and row[key]:
-            # Decode STD10K to bytes, encode as Smart64 (base64 of decompressed bytes)
+            # Decode STD10K to bytes, encode as base64 (for display)
             image_bytes = decode_std10k(row[key])
             row[key] = base64.b64encode(image_bytes).decode('ascii')
         elif key in ("mir", "codex", "insight") and row[key]:
-            # Decode STD1K to text, then encode as Smart64
-            plaintext = decode_std1k(row[key])
-            row[key] = encode_smart64(plaintext)
+            # Decode STD1K to plaintext
+            row[key] = decode_std1k(row[key])
     return row
 
 # ------------------ SUPABASE CRUD ------------------
@@ -169,20 +156,9 @@ def supa_select():
     r = requests.get(url, headers=HEADERS)
     data = r.json()
 
-    if decode_flag:
-        # Human-readable: decode STD1K/STD10K to plaintext
-        for row in data:
-            for key in row:
-                if key == "cognition":
-                    continue
-                elif key == "images" and row[key]:
-                    row[key] = decode_std10k(row[key])
-                elif key in ("mir", "codex", "insight") and row[key]:
-                    row[key] = decode_std1k(row[key])
-    else:
-        # For API: convert to Smart64 where appropriate
-        for row in data:
-            row = decode_row_for_api(row)
+    # Always decode for API users (remove decode_flag if you want raw STDxK)
+    for row in data:
+        row = decode_row_for_api(row)
     return jsonify({"data": data or []}), r.status_code
 
 @app.route('/supa/insert', methods=['POST'])
@@ -235,21 +211,22 @@ def decode1k():
     except Exception as e:
         return jsonify({"error": f"Failed to decode: {str(e)}"}), 400
 
-@app.route('/decode_std64', methods=['POST'])
-def decode_std64():
+@app.route('/decode10k', methods=['POST'])
+def decode10k():
     req = request.get_json(force=True)
     value = req.get('encoded')
     if not value:
         return jsonify({"error": "Missing encoded value"}), 400
     try:
-        decoded = decode_smart64(value)
-        return jsonify({"decoded": decoded}), 200
+        decoded = decode_std10k(value)
+        # Output as base64 for easy handling
+        return jsonify({"decoded": base64.b64encode(decoded).decode('ascii')}), 200
     except Exception as e:
         return jsonify({"error": f"Failed to decode: {str(e)}"}), 400
 
 @app.route('/')
 def index():
-    return "Cleanlight 2.0 Smart64/STDxK API is live.", 200
+    return "Cleanlight 2.0 STDxK (no Smart64 for text) API is live.", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

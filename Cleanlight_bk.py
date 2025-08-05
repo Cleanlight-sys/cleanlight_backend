@@ -185,6 +185,8 @@ def supa_insert():
     encoded_row = process_fields(raw)
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     r = requests.post(url, headers=HEADERS, json=encoded_row)
+    # Log raw response
+    app.logger.info(f"Supabase response: {r.status_code} {r.text}")
     return (r.text, r.status_code, r.headers.items())
 
 @app.route('/supa/update', methods=['PATCH'])
@@ -245,4 +247,5 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 

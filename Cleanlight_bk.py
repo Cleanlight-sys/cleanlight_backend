@@ -150,16 +150,31 @@ def decode_row_for_api(row):
 def supa_select():
     table = request.args.get('table')
     decode_flag = request.args.get('decode', 'false').lower() == 'true'
+    limit = request.args.get('limit')
     if not table:
         return jsonify({"error": "Missing table"}), 400
-    url = f"{SUPABASE_URL}/rest/v1/{table}"
-    r = requests.get(url, headers=HEADERS)
-    data = r.json()
 
-    # Always decode for API users (remove decode_flag if you want raw STDxK)
-    for row in data:
-        row = decode_row_for_api(row)
-    return jsonify({"data": data or []}), r.status_code
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    if limit:
+        url += f"?limit={limit}"
+
+    r = requests.get(url, headers=HEADERS)
+
+    try:
+        data = r.json()
+        # If Supabase returns error dict (e.g., {'message': 'error here'})
+        if isinstance(data, dict) and data.get('message'):
+            return jsonify({"error": data['message']}), 400
+    except Exception as e:
+        return jsonify({"error": f"Failed to parse Supabase response: {str(e)}"}), 400
+
+    if not isinstance(data, list):
+        return jsonify({"error": "Supabase did not return a list"}), 400
+
+    # Always decode for now; you could honor decode_flag if you like
+    data = [decode_row_for_api(row) for row in data]
+
+    return jsonify({"data": data}), 200
 
 @app.route('/supa/insert', methods=['POST'])
 def supa_insert():
@@ -230,3 +245,4 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+

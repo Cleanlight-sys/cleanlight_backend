@@ -176,7 +176,7 @@ def supa_select():
     data = [decode_row_for_api(row) for row in data]
 
     return jsonify({"data": data}), 200
-
+    
 @app.route('/supa/insert', methods=['POST'])
 def supa_insert():
     table = request.args.get('table')
@@ -185,6 +185,7 @@ def supa_insert():
     raw = getattr(request, "merged_json", request.json)
     encoded_row = process_fields(raw)
     url = f"{SUPABASE_URL}/rest/v1/{table}"   # <--- This is perfect.
+    print(f"Posting to: {url}", flush=True)
     r = requests.post(url, headers=HEADERS, json=encoded_row)
     app.logger.info(f"Supabase response: {r.status_code} {r.text}")
     return (r.text, r.status_code, r.headers.items())
@@ -247,6 +248,7 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 

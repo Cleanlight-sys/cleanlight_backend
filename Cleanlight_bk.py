@@ -198,6 +198,9 @@ def supa_insert():
     # Agent-proof: Remove 'table' from the payload if present
     if isinstance(raw, dict):
         raw.pop("table", None)
+    # --- add this line ---
+    if "fields" in raw and isinstance(raw["fields"], dict):
+        raw = raw["fields"]
     encoded_row = process_fields(raw)
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     r = requests.post(url, headers=HEADERS, json=encoded_row)
@@ -265,6 +268,7 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 

@@ -205,7 +205,6 @@ def supa_insert():
     return (r.text, r.status_code, r.headers.items())
     
 @app.route('/supa/update', methods=['PATCH'])
-@app.route('/supa/update', methods=['PATCH'])
 def supa_update():
     table = extract_table(request)
     col = request.args.get('col')
@@ -213,7 +212,7 @@ def supa_update():
     if not (table and col and val):
         return jsonify({"error": "Missing params"}), 400
     raw = getattr(request, "merged_json", request.get_json(force=True) or {})
-    update_data = raw.get("fields", {}) if raw else {}
+    update_data = raw.get("fields", raw) if raw else {}
     # Remove table from fields
     if isinstance(update_data, dict):
         update_data.pop("table", None)
@@ -266,6 +265,7 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 

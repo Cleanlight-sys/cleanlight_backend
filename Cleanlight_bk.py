@@ -32,6 +32,18 @@ def log_and_merge():
             request.merged_json = merged
         except Exception:
             request.merged_json = request.args.to_dict()
+            
+def extract_table(request):
+    # Priority: query string, then body, then default
+    table = request.args.get('table')
+    if not table:
+        # Try body as JSON
+        try:
+            body = request.get_json(silent=True) or {}
+            table = body.get('table')
+        except Exception:
+            table = None
+    return table
 
 # ------------------ BASE ALPHABETS ------------------
 def get_base_alphabet(n):
@@ -179,26 +191,32 @@ def supa_select():
     
 @app.route('/supa/insert', methods=['POST'])
 def supa_insert():
-    table = request.args.get('table')
+    table = extract_table(request)
     if not table:
         return jsonify({"error": "Missing table"}), 400
-    raw = getattr(request, "merged_json", request.json)
+    raw = getattr(request, "merged_json", request.get_json(force=True) or {})
+    # Agent-proof: Remove 'table' from the payload if present
+    if isinstance(raw, dict):
+        raw.pop("table", None)
     encoded_row = process_fields(raw)
-    url = f"{SUPABASE_URL}/rest/v1/{table}"   # <--- This is perfect.
-    print(f"Posting to: {url}", flush=True)
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
     r = requests.post(url, headers=HEADERS, json=encoded_row)
     app.logger.info(f"Supabase response: {r.status_code} {r.text}")
     return (r.text, r.status_code, r.headers.items())
     
 @app.route('/supa/update', methods=['PATCH'])
+@app.route('/supa/update', methods=['PATCH'])
 def supa_update():
-    table = request.args.get('table')
+    table = extract_table(request)
     col = request.args.get('col')
     val = request.args.get('val')
     if not (table and col and val):
         return jsonify({"error": "Missing params"}), 400
-    raw = getattr(request, "merged_json", request.json)
+    raw = getattr(request, "merged_json", request.get_json(force=True) or {})
     update_data = raw.get("fields", {}) if raw else {}
+    # Remove table from fields
+    if isinstance(update_data, dict):
+        update_data.pop("table", None)
     encoded_data = process_fields(update_data)
     url = f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}"
     r = requests.patch(url, headers=HEADERS, json=encoded_data)
@@ -248,6 +266,7 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 

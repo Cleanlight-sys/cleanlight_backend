@@ -172,33 +172,29 @@ def enforce_read_first():
 # ------------------ SUPABASE CRUD ------------------
 @app.route('/supa/select_full_table', methods=['GET'])
 def supa_select_full_table():
-    """
-    Mirror endpoint for agents to fetch an entire table in one shot.
-    Always forces full_read=true and decoding.
-    """
     table = request.args.get('table')
-    ALLOWED_TABLES = {"cleanlight_canvas", "cleanlight_map"}
-
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Table not allowed"}), 400
 
-    # Force parameters for safety
-    params = {
-        "table": table,
-        "full_read": "true",
-        "decode": "true"
-    }
-
+    # Direct Supabase fetch — no internal HTTP call
+    url = f"{SUPABASE_URL}/rest/v1/{table}?full_read=true"
     try:
-        r = requests.get(
-            f"{request.host_url.rstrip('/')}/supa/select_full",
-            params=params
-        )
-    except requests.RequestException as e:
-        return jsonify({"error": f"Internal call failed: {str(e)}"}), 500
+        r = requests.get(url, headers=HEADERS, timeout=60)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        return jsonify({"error": f"Failed to fetch Supabase: {str(e)}"}), 500
 
-    # Proxy back whatever /supa/select_full returned
-    return (r.text, r.status_code, r.headers.items())
+    if not isinstance(data, list):
+        return jsonify({"error": "Supabase did not return a list"}), 400
+
+    # Decode STD1K/STD10K
+    data = [decode_row_for_api(row) for row in data]
+
+    READ_CONTEXT["loaded"] = True
+    READ_CONTEXT["timestamp"] = time.time()
+
+    return jsonify({"data": data}), 200
 
 @app.route('/supa/select', methods=['GET'])
 def supa_select():
@@ -371,5 +367,6 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 

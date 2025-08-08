@@ -1,4 +1,4 @@
-print("App started — hardened version", flush=True)
+print("App started — hardened with read-first + pagination + full read", flush=True)
 from flask import Flask, request, jsonify
 import requests
 import os
@@ -22,23 +22,16 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# ------------------ GLOBAL STATE ------------------
-# Simple in-memory context read enforcement
-_context_reads = {"canvas": False, "map": False, "timestamp": None}
-_CONTEXT_TIMEOUT = 600  # seconds
+# --- Global read-first state ---
+READ_CONTEXT = {"loaded": False, "timestamp": 0}
+READ_TIMEOUT = 600  # seconds until read context expires
 
-def _reset_context_reads():
-    _context_reads["canvas"] = False
-    _context_reads["map"] = False
-    _context_reads["timestamp"] = None
-
-def _context_is_ready():
-    if not (_context_reads["canvas"] and _context_reads["map"]):
-        return False
-    if _context_reads["timestamp"] and (time.time() - _context_reads["timestamp"] > _CONTEXT_TIMEOUT):
-        _reset_context_reads()
-        return False
-    return True
+# --- Whitelisted tables & fields ---
+ALLOWED_FIELDS = {
+    "cleanlight_canvas": ["cognition", "mir", "insight", "codex", "images"],
+    "cleanlight_map": ["cognition", "mir", "insight", "codex", "images", "pointer_net", "macro_group"]
+}
+ALLOWED_TABLES = set(ALLOWED_FIELDS.keys())
 
 # ------------------ LOGGING & MERGE ------------------
 @app.before_request
@@ -133,14 +126,14 @@ def decode_std10k(std10k_str: str) -> bytes:
     return dctx.decompress(compressed)
 
 # ------------------ FIELD PROCESSING ------------------
-_ALLOWED_FIELDS = {"cognition", "mir", "insight", "codex", "images"}
-_ALLOWED_TABLES = {"cleanlight_canvas", "cleanlight_map"}
-
-def process_fields(data, encode=True):
+def process_fields(data, encode=True, table=None):
     processed = {}
+    if table not in ALLOWED_TABLES:
+        raise ValueError("Table not allowed")
+
     for key, val in data.items():
-        if key not in _ALLOWED_FIELDS:
-            continue  # skip unexpected fields
+        if key not in ALLOWED_FIELDS[table]:
+            raise ValueError(f"Field {key} not allowed in table {table}")
         if key == "cognition":
             processed[key] = val
         elif key == "images" and val is not None:
@@ -172,86 +165,137 @@ def decode_row_for_api(row):
             row[key] = decode_std1k(row[key])
     return row
 
+def enforce_read_first():
+    if not READ_CONTEXT["loaded"] or (time.time() - READ_CONTEXT["timestamp"] > READ_TIMEOUT):
+        raise PermissionError("Must read cleanlight_canvas and cleanlight_map before modifying data.")
+
 # ------------------ SUPABASE CRUD ------------------
 @app.route('/supa/select', methods=['GET'])
 def supa_select():
     table = request.args.get('table')
-    if table not in _ALLOWED_TABLES:
-        return jsonify({"error": "Invalid table"}), 400
-    limit = min(int(request.args.get('limit', 10)), 100)
-    url = f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}"
+    if table not in ALLOWED_TABLES:
+        return jsonify({"error": "Table not allowed"}), 400
+
+    try:
+        limit = min(int(request.args.get('limit', 100)), 100)
+    except ValueError:
+        limit = 100
+    offset = int(request.args.get('offset', 0))
+
+    url = f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}&offset={offset}"
     r = requests.get(url, headers=HEADERS)
-    data = r.json()
+
+    try:
+        data = r.json()
+        if isinstance(data, dict) and data.get('message'):
+            return jsonify({"error": data['message']}), 400
+    except Exception as e:
+        return jsonify({"error": f"Failed to parse Supabase response: {str(e)}"}), 400
+
     if not isinstance(data, list):
         return jsonify({"error": "Supabase did not return a list"}), 400
+
     data = [decode_row_for_api(row) for row in data]
-    # mark read state
-    if table == "cleanlight_canvas":
-        _context_reads["canvas"] = True
-    elif table == "cleanlight_map":
-        _context_reads["map"] = True
-    if _context_reads["canvas"] and _context_reads["map"]:
-        _context_reads["timestamp"] = time.time()
+
+    # mark context loaded if reading both tables
+    if table in ("cleanlight_canvas", "cleanlight_map"):
+        READ_CONTEXT["loaded"] = True
+        READ_CONTEXT["timestamp"] = time.time()
+
     return jsonify({"data": data}), 200
 
-def _reject_if_no_context():
-    if not _context_is_ready():
-        return jsonify({"error": "Must read cleanlight_canvas and cleanlight_map before modifying data."}), 400
-    return None
+@app.route('/supa/select_full', methods=['GET'])
+def supa_select_full():
+    table = request.args.get('table')
+    full_flag = request.args.get('full_read', 'false').lower() == 'true'
+    if table not in ALLOWED_TABLES:
+        return jsonify({"error": "Table not allowed"}), 400
+    if not full_flag:
+        return jsonify({"error": "Must set full_read=true to use this endpoint"}), 400
+
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    r = requests.get(url, headers=HEADERS)
+    try:
+        data = r.json()
+        if isinstance(data, dict) and data.get('message'):
+            return jsonify({"error": data['message']}), 400
+    except Exception as e:
+        return jsonify({"error": f"Failed to parse Supabase response: {str(e)}"}), 400
+
+    if not isinstance(data, list):
+        return jsonify({"error": "Supabase did not return a list"}), 400
+
+    data = [decode_row_for_api(row) for row in data]
+    READ_CONTEXT["loaded"] = True
+    READ_CONTEXT["timestamp"] = time.time()
+
+    return jsonify({"data": data}), 200
 
 @app.route('/supa/insert', methods=['POST'])
 def supa_insert():
-    if (err := _reject_if_no_context()):
-        return err
     table = extract_table(request)
-    if table not in _ALLOWED_TABLES:
-        return jsonify({"error": "Invalid table"}), 400
+    if table not in ALLOWED_TABLES:
+        return jsonify({"error": "Table not allowed"}), 400
+    enforce_read_first()
+
     raw = getattr(request, "merged_json", request.get_json(force=True) or {})
     if isinstance(raw, dict):
         raw.pop("table", None)
     if "fields" in raw and isinstance(raw["fields"], dict):
         raw = raw["fields"]
-    encoded_row = process_fields(raw)
+
+    try:
+        encoded_row = process_fields(raw, encode=True, table=table)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     r = requests.post(url, headers=HEADERS, json=encoded_row)
     return (r.text, r.status_code, r.headers.items())
 
 @app.route('/supa/update', methods=['PATCH'])
 def supa_update():
-    if (err := _reject_if_no_context()):
-        return err
     table = extract_table(request)
-    if table not in _ALLOWED_TABLES:
-        return jsonify({"error": "Invalid table"}), 400
+    if table not in ALLOWED_TABLES:
+        return jsonify({"error": "Table not allowed"}), 400
+    enforce_read_first()
+
     col = request.args.get('col')
     val = request.args.get('val')
-    if not (table and col and val):
+    if not (col and val):
         return jsonify({"error": "Missing params"}), 400
+
     raw = getattr(request, "merged_json", request.get_json(force=True) or {})
     update_data = raw.get("fields", raw) if raw else {}
     if isinstance(update_data, dict):
         update_data.pop("table", None)
-    encoded_data = process_fields(update_data)
+
+    try:
+        encoded_data = process_fields(update_data, encode=True, table=table)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
     url = f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}"
     r = requests.patch(url, headers=HEADERS, json=encoded_data)
     return (r.text, r.status_code, r.headers.items())
 
 @app.route('/supa/delete', methods=['DELETE'])
 def supa_delete():
-    if (err := _reject_if_no_context()):
-        return err
     table = request.args.get('table')
-    if table not in _ALLOWED_TABLES:
-        return jsonify({"error": "Invalid table"}), 400
+    if table not in ALLOWED_TABLES:
+        return jsonify({"error": "Table not allowed"}), 400
+    enforce_read_first()
+
     col = request.args.get('col')
     val = request.args.get('val')
-    if not (table and col and val):
+    if not (col and val):
         return jsonify({"error": "Missing params"}), 400
+
     url = f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}"
     r = requests.delete(url, headers=HEADERS)
     return (r.text, r.status_code, r.headers.items())
 
-# ------------------ HUMAN-READABLE DECODERS ------------------
+# ------------------ DECODERS ------------------
 @app.route('/decode1k', methods=['POST'])
 def decode1k():
     req = request.get_json(force=True)
@@ -278,7 +322,7 @@ def decode10k():
 
 @app.route('/')
 def index():
-    return "Cleanlight 2.1 — hardened, read-first enforced.", 200
+    return "Cleanlight 2.1 hardened API with read-first + pagination + full-read is live.", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)

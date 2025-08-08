@@ -208,13 +208,24 @@ def supa_select():
 def supa_select_full():
     table = request.args.get('table')
     full_flag = request.args.get('full_read', 'false').lower() == 'true'
+
+    # Only allow specific tables
+    ALLOWED_TABLES = {"cleanlight_canvas", "cleanlight_map"}
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Table not allowed"}), 400
+
+    # Require explicit flag to avoid accidental heavy reads
     if not full_flag:
         return jsonify({"error": "Must set full_read=true to use this endpoint"}), 400
 
-    url = f"{SUPABASE_URL}/rest/v1/{table}"
-    r = requests.get(url, headers=HEADERS)
+    # Build URL with full_read param to force backend allowance
+    url = f"{SUPABASE_URL}/rest/v1/{table}?full_read=true"
+
+    try:
+        r = requests.get(url, headers=HEADERS)
+    except requests.RequestException as e:
+        return jsonify({"error": f"Failed to connect to Supabase: {str(e)}"}), 500
+
     try:
         data = r.json()
         if isinstance(data, dict) and data.get('message'):
@@ -225,7 +236,11 @@ def supa_select_full():
     if not isinstance(data, list):
         return jsonify({"error": "Supabase did not return a list"}), 400
 
+    # Decode all STD1K/STD10K fields for readability
     data = [decode_row_for_api(row) for row in data]
+
+    # Track context (optional)
+    import time
     READ_CONTEXT["loaded"] = True
     READ_CONTEXT["timestamp"] = time.time()
 
@@ -326,3 +341,4 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+

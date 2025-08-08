@@ -1,4 +1,4 @@
-print("App started — top of file", flush=True)
+print("App started — hardened version", flush=True)
 from flask import Flask, request, jsonify
 import requests
 import os
@@ -7,6 +7,7 @@ import io
 import zstandard as zstd
 import base64
 import logging
+import time
 
 app = Flask(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -21,6 +22,24 @@ HEADERS = {
     "Accept": "application/json"
 }
 
+# ------------------ GLOBAL STATE ------------------
+# Simple in-memory context read enforcement
+_context_reads = {"canvas": False, "map": False, "timestamp": None}
+_CONTEXT_TIMEOUT = 600  # seconds
+
+def _reset_context_reads():
+    _context_reads["canvas"] = False
+    _context_reads["map"] = False
+    _context_reads["timestamp"] = None
+
+def _context_is_ready():
+    if not (_context_reads["canvas"] and _context_reads["map"]):
+        return False
+    if _context_reads["timestamp"] and (time.time() - _context_reads["timestamp"] > _CONTEXT_TIMEOUT):
+        _reset_context_reads()
+        return False
+    return True
+
 # ------------------ LOGGING & MERGE ------------------
 @app.before_request
 def log_and_merge():
@@ -32,12 +51,10 @@ def log_and_merge():
             request.merged_json = merged
         except Exception:
             request.merged_json = request.args.to_dict()
-            
+
 def extract_table(request):
-    # Priority: query string, then body, then default
     table = request.args.get('table')
     if not table:
-        # Try body as JSON
         try:
             body = request.get_json(silent=True) or {}
             table = body.get('table')
@@ -71,7 +88,6 @@ BASE1K = get_base_alphabet(1000)
 BASE10K = get_base_alphabet(10000)
 
 # ------------------ ENCODING/DECODING HELPERS ------------------
-
 def int_to_baseN(num, alphabet):
     if num == 0:
         return alphabet[0]
@@ -117,15 +133,18 @@ def decode_std10k(std10k_str: str) -> bytes:
     return dctx.decompress(compressed)
 
 # ------------------ FIELD PROCESSING ------------------
+_ALLOWED_FIELDS = {"cognition", "mir", "insight", "codex", "images"}
+_ALLOWED_TABLES = {"cleanlight_canvas", "cleanlight_map"}
 
 def process_fields(data, encode=True):
     processed = {}
     for key, val in data.items():
+        if key not in _ALLOWED_FIELDS:
+            continue  # skip unexpected fields
         if key == "cognition":
-            processed[key] = val  # Always plain text
+            processed[key] = val
         elif key == "images" and val is not None:
             if encode:
-                # Accepts base64 for images, store as STD10K
                 if isinstance(val, str):
                     image_bytes = base64.b64decode(val)
                 else:
@@ -135,7 +154,6 @@ def process_fields(data, encode=True):
                 processed[key] = val
         elif key in ("mir", "codex", "insight") and val is not None:
             if encode:
-                # Accept plain text for all, store as STD1K
                 processed[key] = encode_std1k(val)
             else:
                 processed[key] = val
@@ -144,79 +162,73 @@ def process_fields(data, encode=True):
     return processed
 
 def decode_row_for_api(row):
-    # For API output, convert STD1K/STD10K fields to base64/plaintext
     for key in row:
         if key == "cognition":
-            continue  # Always plain text
+            continue
         elif key == "images" and row[key]:
-            # Decode STD10K to bytes, encode as base64 (for display)
             image_bytes = decode_std10k(row[key])
             row[key] = base64.b64encode(image_bytes).decode('ascii')
         elif key in ("mir", "codex", "insight") and row[key]:
-            # Decode STD1K to plaintext
             row[key] = decode_std1k(row[key])
     return row
 
 # ------------------ SUPABASE CRUD ------------------
-
 @app.route('/supa/select', methods=['GET'])
 def supa_select():
     table = request.args.get('table')
-    decode_flag = request.args.get('decode', 'false').lower() == 'true'
-    limit = request.args.get('limit')
-    if not table:
-        return jsonify({"error": "Missing table"}), 400
-
-    url = f"{SUPABASE_URL}/rest/v1/{table}"
-    if limit:
-        url += f"?limit={limit}"
-
+    if table not in _ALLOWED_TABLES:
+        return jsonify({"error": "Invalid table"}), 400
+    limit = min(int(request.args.get('limit', 10)), 100)
+    url = f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}"
     r = requests.get(url, headers=HEADERS)
-
-    try:
-        data = r.json()
-        # If Supabase returns error dict (e.g., {'message': 'error here'})
-        if isinstance(data, dict) and data.get('message'):
-            return jsonify({"error": data['message']}), 400
-    except Exception as e:
-        return jsonify({"error": f"Failed to parse Supabase response: {str(e)}"}), 400
-
+    data = r.json()
     if not isinstance(data, list):
         return jsonify({"error": "Supabase did not return a list"}), 400
-
-    # Always decode for now; you could honor decode_flag if you like
     data = [decode_row_for_api(row) for row in data]
-
+    # mark read state
+    if table == "cleanlight_canvas":
+        _context_reads["canvas"] = True
+    elif table == "cleanlight_map":
+        _context_reads["map"] = True
+    if _context_reads["canvas"] and _context_reads["map"]:
+        _context_reads["timestamp"] = time.time()
     return jsonify({"data": data}), 200
-    
+
+def _reject_if_no_context():
+    if not _context_is_ready():
+        return jsonify({"error": "Must read cleanlight_canvas and cleanlight_map before modifying data."}), 400
+    return None
+
 @app.route('/supa/insert', methods=['POST'])
 def supa_insert():
+    if (err := _reject_if_no_context()):
+        return err
     table = extract_table(request)
-    if not table:
-        return jsonify({"error": "Missing table"}), 400
+    if table not in _ALLOWED_TABLES:
+        return jsonify({"error": "Invalid table"}), 400
     raw = getattr(request, "merged_json", request.get_json(force=True) or {})
-    # Agent-proof: Remove 'table' from the payload if present
     if isinstance(raw, dict):
         raw.pop("table", None)
-    # --- add this line ---
     if "fields" in raw and isinstance(raw["fields"], dict):
         raw = raw["fields"]
     encoded_row = process_fields(raw)
     url = f"{SUPABASE_URL}/rest/v1/{table}"
     r = requests.post(url, headers=HEADERS, json=encoded_row)
-    app.logger.info(f"Supabase response: {r.status_code} {r.text}")
     return (r.text, r.status_code, r.headers.items())
-    
+
 @app.route('/supa/update', methods=['PATCH'])
 def supa_update():
+    if (err := _reject_if_no_context()):
+        return err
     table = extract_table(request)
+    if table not in _ALLOWED_TABLES:
+        return jsonify({"error": "Invalid table"}), 400
     col = request.args.get('col')
     val = request.args.get('val')
     if not (table and col and val):
         return jsonify({"error": "Missing params"}), 400
     raw = getattr(request, "merged_json", request.get_json(force=True) or {})
     update_data = raw.get("fields", raw) if raw else {}
-    # Remove table from fields
     if isinstance(update_data, dict):
         update_data.pop("table", None)
     encoded_data = process_fields(update_data)
@@ -226,7 +238,11 @@ def supa_update():
 
 @app.route('/supa/delete', methods=['DELETE'])
 def supa_delete():
+    if (err := _reject_if_no_context()):
+        return err
     table = request.args.get('table')
+    if table not in _ALLOWED_TABLES:
+        return jsonify({"error": "Invalid table"}), 400
     col = request.args.get('col')
     val = request.args.get('val')
     if not (table and col and val):
@@ -236,7 +252,6 @@ def supa_delete():
     return (r.text, r.status_code, r.headers.items())
 
 # ------------------ HUMAN-READABLE DECODERS ------------------
-
 @app.route('/decode1k', methods=['POST'])
 def decode1k():
     req = request.get_json(force=True)
@@ -257,22 +272,13 @@ def decode10k():
         return jsonify({"error": "Missing encoded value"}), 400
     try:
         decoded = decode_std10k(value)
-        # Output as base64 for easy handling
         return jsonify({"decoded": base64.b64encode(decoded).decode('ascii')}), 200
     except Exception as e:
         return jsonify({"error": f"Failed to decode: {str(e)}"}), 400
 
 @app.route('/')
 def index():
-    return "Cleanlight 2.0 STDxK (no Smart64 for text) API is live.", 200
+    return "Cleanlight 2.1 — hardened, read-first enforced.", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
-
-
-
-
-
-
-

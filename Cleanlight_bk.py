@@ -176,25 +176,38 @@ def supa_select_full_table():
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Table not allowed"}), 400
 
-    # Direct Supabase fetch — no internal HTTP call
-    url = f"{SUPABASE_URL}/rest/v1/{table}?full_read=true"
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=60)
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        return jsonify({"error": f"Failed to fetch Supabase: {str(e)}"}), 500
+    all_rows = []
+    limit = 1000  # max chunk size per request
+    offset = 0
 
-    if not isinstance(data, list):
-        return jsonify({"error": "Supabase did not return a list"}), 400
+    while True:
+        url = f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}&offset={offset}"
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=60)
+            r.raise_for_status()
+            chunk = r.json()
+        except Exception as e:
+            return jsonify({"error": f"Failed to fetch Supabase: {str(e)}"}), 500
 
-    # Decode STD1K/STD10K
-    data = [decode_row_for_api(row) for row in data]
+        if not isinstance(chunk, list):
+            return jsonify({"error": "Supabase did not return a list"}), 400
+
+        if not chunk:
+            break  # no more rows
+
+        # Decode each row from STD1K/STD10K for API output
+        chunk = [decode_row_for_api(row) for row in chunk]
+        all_rows.extend(chunk)
+
+        if len(chunk) < limit:
+            break  # last page
+        offset += limit
 
     READ_CONTEXT["loaded"] = True
     READ_CONTEXT["timestamp"] = time.time()
 
-    return jsonify({"data": data}), 200
+    return jsonify({"data": all_rows}), 200
+
 
 @app.route('/supa/select', methods=['GET'])
 def supa_select():
@@ -367,6 +380,7 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 

@@ -170,6 +170,36 @@ def enforce_read_first():
         raise PermissionError("Must read cleanlight_canvas and cleanlight_map before modifying data.")
 
 # ------------------ SUPABASE CRUD ------------------
+@app.route('/supa/select_full_table', methods=['GET'])
+def supa_select_full_table():
+    """
+    Mirror endpoint for agents to fetch an entire table in one shot.
+    Always forces full_read=true and decoding.
+    """
+    table = request.args.get('table')
+    ALLOWED_TABLES = {"cleanlight_canvas", "cleanlight_map"}
+
+    if table not in ALLOWED_TABLES:
+        return jsonify({"error": "Table not allowed"}), 400
+
+    # Force parameters for safety
+    params = {
+        "table": table,
+        "full_read": "true",
+        "decode": "true"
+    }
+
+    try:
+        r = requests.get(
+            f"{request.host_url.rstrip('/')}/supa/select_full",
+            params=params
+        )
+    except requests.RequestException as e:
+        return jsonify({"error": f"Internal call failed: {str(e)}"}), 500
+
+    # Proxy back whatever /supa/select_full returned
+    return (r.text, r.status_code, r.headers.items())
+
 @app.route('/supa/select', methods=['GET'])
 def supa_select():
     table = request.args.get('table')
@@ -341,4 +371,5 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 

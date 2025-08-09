@@ -343,28 +343,32 @@ def clanker():
         if not method or not path:
             return jsonify({"error": "Missing method or path"}), 400
 
-        # Ensure path starts with /
+        # Ensure leading slash
         if not path.startswith("/"):
             path = "/" + path
 
-        # Decide target URL
-        if path.startswith("/supa/"):
-            # Strip the /supa/ prefix to match Supabase table API
+        # -----------------------
+        # Namespace handling
+        # -----------------------
+        if path.startswith("/flask/"):
+            # Hit internal Flask route
+            target_url = request.host_url.rstrip("/") + path.replace("/flask", "")
+            headers = {}
+        elif path.startswith("/supa/"):
+            # Direct to Supabase REST API
             supa_path = path.replace("/supa/", "")
             target_url = f"{SUPABASE_URL}/rest/v1/{supa_path}"
             headers = HEADERS
         else:
-            # Call internal Flask endpoint
-            target_url = request.host_url.rstrip("/") + path
-            headers = {}
+            return jsonify({"error": "Invalid path namespace — must start with /flask/ or /supa/"}), 400
 
-        # Make the request
+        # Make the proxied request
         r = requests.request(
             method=method,
             url=target_url,
             headers=headers,
             params=params,
-            json=json_body if method in ["POST", "PATCH"] else None,
+            json=json_body if method in ["POST", "PATCH", "DELETE"] else None,
             timeout=60
         )
 
@@ -380,13 +384,10 @@ def clanker():
 
     except Exception as e:
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
-        
-@app.route('/')
-def index():
-    return "Cleanlight 2.1 — Hardened API + Clanker Universal Proxy is live.", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 

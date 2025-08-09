@@ -125,22 +125,36 @@ def command():
     table = payload.get("table")
     where = payload.get("where")
     fields = payload.get("fields")
+    limit = payload.get("limit")
+    offset = payload.get("offset")
 
-    # Basic validation
     if action not in ["read_table", "read_row", "insert", "update", "append"]:
         return jsonify({"error": "Invalid action"}), 400
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Invalid table"}), 400
 
-    # Execute action
+    # Handle paging query params
+    limit_clause = f"&limit={limit}" if limit else ""
+    offset_clause = f"&offset={offset}" if offset else ""
+
     if action == "read_table":
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS)
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/{table}?select=*&order=id.asc{limit_clause}{offset_clause}",
+            headers=HEADERS
+        )
+        if r.status_code != 200:
+            return jsonify({"error": "Database read error"}), r.status_code
         return jsonify([decode_row(row) for row in r.json()])
 
     if action == "read_row":
         if not where:
             return jsonify({"error": "Missing 'where'"}), 400
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS)
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}&order=id.asc{limit_clause}{offset_clause}",
+            headers=HEADERS
+        )
+        if r.status_code != 200:
+            return jsonify({"error": "Database read error"}), r.status_code
         return jsonify([decode_row(row) for row in r.json()])
 
     if action == "insert":
@@ -179,5 +193,6 @@ def command():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
+
 
 

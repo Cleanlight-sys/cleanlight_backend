@@ -155,13 +155,39 @@ def command():
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Invalid table"}), 400
 
-    if action == "read_table":
-        return Response(stream_with_context(stream_table_data(table)), mimetype="application/json")
+     if action == "read_table":
+        def generate():
+            yield "["
+            first = True
+            with requests.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, stream=True) as r:
+                r.raise_for_status()
+                data = r.json()
+                for row in data:
+                    decoded = decode_row(row)
+                    if not first:
+                        yield ","
+                    yield json.dumps(decoded)
+                    first = False
+            yield "]"
+        return Response(stream_with_context(generate()), content_type="application/json")
 
     if action == "read_row":
         if not where:
             return jsonify({"error": "Missing 'where'"}), 400
-        return Response(stream_with_context(stream_table_data(table, where=where)), mimetype="application/json")
+        def generate():
+            yield "["
+            first = True
+            with requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS, stream=True) as r:
+                r.raise_for_status()
+                data = r.json()
+                for row in data:
+                    decoded = decode_row(row)
+                    if not first:
+                        yield ","
+                    yield json.dumps(decoded)
+                    first = False
+            yield "]"
+        return Response(stream_with_context(generate()), content_type="application/json")
 
     if action == "insert":
         if not fields:
@@ -199,3 +225,4 @@ def command():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
+

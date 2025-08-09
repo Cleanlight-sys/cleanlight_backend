@@ -1,9 +1,9 @@
 from flask import Flask, request, jsonify, Response, stream_with_context
-import requests, json, time, base64, unicodedata, os, zstandard as zstd
+import requests, json, time, base64, unicodedata, os, zstandard as zstd, threading
 
 app = Flask(__name__)
 
-# ---- Config ----
+# ==== CONFIG ====
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 HEADERS = {
@@ -22,7 +22,7 @@ ALLOWED_TABLES = set(ALLOWED_FIELDS.keys())
 READ_CONTEXT = {"loaded": False, "timestamp": 0}
 READ_TIMEOUT = 600
 
-# ---- Encoding helpers ----
+# ==== ENCODING HELPERS ====
 def get_base_alphabet(n):
     safe = []
     for codepoint in range(0x20, 0x2FFFF):
@@ -64,8 +64,7 @@ def baseN_to_int(s, alphabet):
     return num
 
 def encode_std1k(plaintext: str) -> str:
-    cctx = zstd.ZstdCompressor()
-    compressed = cctx.compress(plaintext.encode('utf-8'))
+    compressed = zstd.ZstdCompressor().compress(plaintext.encode('utf-8'))
     return int_to_baseN(int.from_bytes(compressed, 'big'), BASE1K)
 
 def decode_std1k(std1k_str: str) -> str:
@@ -74,8 +73,7 @@ def decode_std1k(std1k_str: str) -> str:
     return zstd.ZstdDecompressor().decompress(compressed).decode('utf-8')
 
 def encode_std10k(image_bytes: bytes) -> str:
-    cctx = zstd.ZstdCompressor()
-    compressed = cctx.compress(image_bytes)
+    compressed = zstd.ZstdCompressor().compress(image_bytes)
     return int_to_baseN(int.from_bytes(compressed, 'big'), BASE10K)
 
 def decode_std10k(std10k_str: str) -> bytes:
@@ -83,13 +81,13 @@ def decode_std10k(std10k_str: str) -> bytes:
     compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
     return zstd.ZstdDecompressor().decompress(compressed)
 
-# ---- Processing ----
+# ==== FIELD PROCESSING ====
 def process_fields(data, encode=True, table=None):
     processed = {}
     for key, val in data.items():
         if key not in ALLOWED_FIELDS[table]:
             raise ValueError(f"Field {key} not allowed")
-        if key == "id" or key == "cognition" or key == "pointer_net":
+        if key in ("id", "cognition", "pointer_net"):
             processed[key] = val
         elif key == "images" and val is not None:
             processed[key] = encode_std10k(base64.b64decode(val)) if encode else val
@@ -111,7 +109,26 @@ def enforce_read_first():
     if not READ_CONTEXT["loaded"] or (time.time() - READ_CONTEXT["timestamp"] > READ_TIMEOUT):
         raise PermissionError("Must read tables first")
 
-# ---- Routes ----
+# ==== HEALTH ====
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({"status": "ok", "time": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())}), 200
+
+# ==== AUTO-WAKE THREAD ====
+def auto_wake():
+    while True:
+        try:
+            requests.get(f"{os.getenv('SELF_URL', '')}/health", timeout=5)
+        except:
+            pass
+        time.sleep(300)  # every 5 min
+
+@app.before_first_request
+def start_wake_thread():
+    if os.getenv("SELF_URL"):
+        threading.Thread(target=auto_wake, daemon=True).start()
+
+# ==== CRUD + SELECT ====
 @app.route('/flask/select_full_table', methods=['GET'])
 def select_full_table():
     table = request.args.get('table')
@@ -201,3 +218,6 @@ def append():
     encoded = process_fields(decoded, encode=True, table=table)
     r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}", headers=HEADERS, json=encoded)
     return jsonify(r.json()), r.status_code
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)

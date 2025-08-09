@@ -1,6 +1,7 @@
 print("App started — hardened with read-first + pagination + full read + clanker proxy", flush=True)
 
 import traceback
+from urllib.parse import urlencode
 from flask import Flask, request, jsonify
 import requests
 import os
@@ -313,69 +314,42 @@ def supa_append():
     return safe_request("PATCH", f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}", headers=HEADERS, json=encoded).text, 200
 
 # ------------------ CLANKER UNIVERSAL ENDPOINT ------------------
-@app.route('/clanker', methods=['POST'])
+@app.route("/clanker", methods=["POST"])
 def clanker():
     try:
-        # --- Parse JSON ---
-        try:
-            incoming = request.get_json(force=True)
-        except Exception as e:
-            app.logger.error(f"[CLANKER] Failed to parse JSON: {str(e)}")
-            return jsonify({"error": "Invalid JSON", "details": str(e)}), 400
-
-        app.logger.info(f"[CLANKER] Incoming raw payload: {incoming}")
-
-        # --- Validate required fields ---
-        method = incoming.get("method")
-        path = incoming.get("path")
-        params = incoming.get("params", {})
-        json_body = incoming.get("json", {})
+        data = request.get_json(force=True)
+        method = data.get("method")
+        path = data.get("path")
+        params = data.get("params", {})
+        json_body = data.get("json", {})
 
         if not method or not path:
-            return jsonify({"error": "Missing required fields 'method' or 'path'"}), 400
-        if not isinstance(params, dict):
-            return jsonify({"error": "'params' must be a dictionary"}), 400
-        if not isinstance(json_body, dict):
-            return jsonify({"error": "'json' must be a dictionary"}), 400
+            return jsonify({"error": "method and path are required"}), 400
 
-        # --- Build target URL ---
-        # Ensures we always hit our own server
-        target_url = request.host_url.rstrip('/') + path
-        app.logger.info(f"[CLANKER] Forwarding to {target_url} with method={method}, params={params}")
+        # Merge query params into path if provided
+        if params:
+            query_string = urlencode(params)
+            path = f"{path}?{query_string}"
 
-        # --- Make the internal request ---
-        try:
-            r = requests.request(
-                method=method.upper(),
-                url=target_url,
-                params=params,
-                json=json_body,
-                headers={"Content-Type": "application/json"},
-                timeout=30
-            )
-        except requests.RequestException as e:
-            app.logger.error(f"[CLANKER] Internal request failed: {str(e)}")
-            return jsonify({"error": "Internal request to endpoint failed", "details": str(e)}), 502
+        # Forward the request internally
+        url = request.host_url.rstrip("/") + path
+        resp = requests.request(method, url, json=json_body, headers=request.headers)
 
-        # --- Relay response ---
-        try:
-            return jsonify(r.json()), r.status_code
-        except Exception:
-            app.logger.warning(f"[CLANKER] Non-JSON response relayed as text")
-            return r.text, r.status_code
+        return jsonify({
+            "status": resp.status_code,
+            "data": resp.json() if resp.headers.get("Content-Type", "").startswith("application/json") else resp.text
+        }), resp.status_code
 
     except Exception as e:
-        # Catch-all safety net
-        tb = traceback.format_exc()
-        app.logger.error(f"[CLANKER] Unexpected error: {str(e)}\nTraceback:\n{tb}")
-        return jsonify({"error": "Unexpected server error", "details": str(e)}), 500
-
+        return jsonify({"error": str(e)}), 500
+        
 @app.route('/')
 def index():
     return "Cleanlight 2.1 — Hardened API + Clanker Universal Proxy is live.", 200
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 

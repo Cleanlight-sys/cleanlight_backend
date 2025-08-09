@@ -20,12 +20,11 @@ ALLOWED_FIELDS = {
 }
 ALLOWED_TABLES = set(ALLOWED_FIELDS.keys())
 
-# ---- Encoding helpers ----
+# ---- Encoding/Decoding Helpers ----
 def get_base_alphabet(n):
     safe = []
     for codepoint in range(0x20, 0x2FFFF):
         ch = chr(codepoint)
-        name = ch.encode("unicode_escape").decode()
         if (
             0xD800 <= codepoint <= 0xDFFF or
             0xFDD0 <= codepoint <= 0xFDEF or
@@ -78,7 +77,7 @@ def decode_std10k(std10k_str: str) -> bytes:
     compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
     return zstd.ZstdDecompressor().decompress(compressed)
 
-# ---- Field processing ----
+# ---- Field Processing ----
 def process_fields(data, table):
     processed = {}
     for key, val in data.items():
@@ -95,6 +94,7 @@ def process_fields(data, table):
     return processed
 
 def decode_row(row):
+    """Always decode codex, mir, insight, images before returning."""
     for k in list(row.keys()):
         if k == "images" and row[k]:
             try:
@@ -108,7 +108,7 @@ def decode_row(row):
                 pass
     return row
 
-# ---- CRUD endpoint ----
+# ---- CRUD Endpoint ----
 @app.route("/flask/command", methods=["POST"])
 def command():
     payload = request.get_json(force=True) or {}
@@ -125,19 +125,13 @@ def command():
         return jsonify({"error": "Invalid table"}), 400
 
     if action == "read_table":
-        r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}&offset={offset}",
-            headers=HEADERS
-        )
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}&offset={offset}", headers=HEADERS)
         return jsonify([decode_row(row) for row in r.json()])
 
     if action == "read_row":
         if not where:
             return jsonify({"error": "Missing 'where'"}), 400
-        r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}&limit={limit}&offset={offset}",
-            headers=HEADERS
-        )
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS)
         return jsonify([decode_row(row) for row in r.json()])
 
     if action == "insert":
@@ -151,19 +145,13 @@ def command():
         if not where or not fields:
             return jsonify({"error": "Missing 'where' or 'fields'"}), 400
         encoded = process_fields(fields, table)
-        r = requests.patch(
-            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}",
-            headers=HEADERS, json=encoded
-        )
+        r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS, json=encoded)
         return jsonify(r.json()), r.status_code
 
     if action == "append":
         if not where or not fields:
             return jsonify({"error": "Missing 'where' or 'fields'"}), 400
-        existing = requests.get(
-            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}",
-            headers=HEADERS
-        ).json()
+        existing = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS).json()
         if not existing:
             return jsonify({"error": "Row not found"}), 404
         decoded = decode_row(existing[0])
@@ -173,15 +161,12 @@ def command():
             else:
                 decoded[k] = v
         encoded = process_fields(decoded, table)
-        r = requests.patch(
-            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}",
-            headers=HEADERS, json=encoded
-        )
+        r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS, json=encoded)
         return jsonify(r.json()), r.status_code
 
     return jsonify({"error": "Unknown error"}), 500
 
-# ---- Health check ----
+# ---- Health Check ----
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})

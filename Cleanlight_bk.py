@@ -298,15 +298,25 @@ def supa_append():
 @app.route('/clanker', methods=['POST'])
 def clanker():
     """
-    Universal pass-through for AI calls.
-    Expects JSON body with:
-      - method: HTTP verb (GET, POST, PATCH, DELETE)
-      - path: Target API path (e.g. "/supa/update")
-      - params: Dict of query parameters
-      - json: Dict of JSON body to send
+    Universal pass-through for AI calls (schema-friendly).
+    OpenAI will send:
+    {
+      "body": {
+        "method": "GET",
+        "path": "/supa/select",
+        "params": { "table": "cleanlight_canvas", "limit": "10" },
+        "json": {}
+      }
+    }
     """
     try:
-        data = request.get_json(force=True)
+        raw_data = request.get_json(force=True) or {}
+        # If the payload is wrapped in 'body', unpack it
+        if "body" in raw_data and isinstance(raw_data["body"], dict):
+            data = raw_data["body"]
+        else:
+            data = raw_data
+
         method = data.get('method')
         path = data.get('path')
         params = data.get('params', {})
@@ -318,12 +328,12 @@ def clanker():
         # Build full target URL
         target_url = f"{request.host_url.rstrip('/')}{path}"
 
-        # Route the request to the target endpoint internally
+        # Route the request internally
         resp = requests.request(
             method=method.upper(),
             url=target_url,
-            params=params,
-            json=json_body,
+            params=params if isinstance(params, dict) else {},
+            json=json_body if isinstance(json_body, dict) else {},
             headers={"Content-Type": "application/json", "Accept": "application/json"}
         )
 
@@ -347,4 +357,5 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 

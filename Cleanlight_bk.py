@@ -1,10 +1,11 @@
+# cleanlight_backend.py
 from flask import Flask, request, jsonify, Response, stream_with_context
-import requests, json, time, base64, unicodedata, os, zstandard as zstd
+import requests, json, os, time, base64, unicodedata, zstandard as zstd
 from datetime import datetime
 
 app = Flask(__name__)
 
-# ---- Config ----
+# --- Config ---
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 HEADERS = {
@@ -22,9 +23,9 @@ ALLOWED_TABLES = set(ALLOWED_FIELDS.keys())
 
 READ_CONTEXT = {"loaded": False, "timestamp": 0}
 READ_TIMEOUT = 600
-AWAKE_FLAG = False
 
-# ---- Encoding helpers ----
+
+# --- Encoding Helpers ---
 def get_base_alphabet(n):
     safe = []
     for codepoint in range(0x20, 0x2FFFF):
@@ -34,8 +35,10 @@ def get_base_alphabet(n):
             0xD800 <= codepoint <= 0xDFFF or
             0xFDD0 <= codepoint <= 0xFDEF or
             codepoint & 0xFFFE == 0xFFFE or
-            "CONTROL" in name or "PRIVATE USE" in name or
-            "COMBINING" in name or "FORMAT" in name or
+            "CONTROL" in name or
+            "PRIVATE USE" in name or
+            "COMBINING" in name or
+            "FORMAT" in name or
             name == ""
         ):
             continue
@@ -65,169 +68,171 @@ def baseN_to_int(s, alphabet):
         num = num * base + alpha_map[ch]
     return num
 
-def encode_std1k(plaintext: str) -> str:
-    cctx = zstd.ZstdCompressor()
-    compressed = cctx.compress(plaintext.encode('utf-8'))
-    return int_to_baseN(int.from_bytes(compressed, 'big'), BASE1K)
+def encode_std1k(plaintext):
+    compressed = zstd.ZstdCompressor().compress(plaintext.encode("utf-8"))
+    return int_to_baseN(int.from_bytes(compressed, "big"), BASE1K)
 
-def decode_std1k(std1k_str: str) -> str:
-    as_int = baseN_to_int(std1k_str, BASE1K)
-    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
-    return zstd.ZstdDecompressor().decompress(compressed).decode('utf-8')
+def decode_std1k(encoded):
+    as_int = baseN_to_int(encoded, BASE1K)
+    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, "big")
+    return zstd.ZstdDecompressor().decompress(compressed).decode("utf-8")
 
-def encode_std10k(image_bytes: bytes) -> str:
-    cctx = zstd.ZstdCompressor()
-    compressed = cctx.compress(image_bytes)
-    return int_to_baseN(int.from_bytes(compressed, 'big'), BASE10K)
+def encode_std10k(image_bytes):
+    compressed = zstd.ZstdCompressor().compress(image_bytes)
+    return int_to_baseN(int.from_bytes(compressed, "big"), BASE10K)
 
-def decode_std10k(std10k_str: str) -> bytes:
-    as_int = baseN_to_int(std10k_str, BASE10K)
-    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
+def decode_std10k(encoded):
+    as_int = baseN_to_int(encoded, BASE10K)
+    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, "big")
     return zstd.ZstdDecompressor().decompress(compressed)
 
-# ---- Processing ----
-def process_fields(data, encode=True, table=None):
+
+# --- Field Processing ---
+def process_fields(data, table, encode=True):
     processed = {}
     for key, val in data.items():
         if key not in ALLOWED_FIELDS[table]:
-            raise ValueError(f"Field {key} not allowed")
+            raise ValueError(f"Field {key} not allowed for table {table}")
         if key in ("id", "cognition", "pointer_net"):
             processed[key] = val
         elif key == "images" and val is not None:
-            processed[key] = encode_std10k(base64.b64decode(val)) if encode else val
+            if encode:
+                processed[key] = encode_std10k(base64.b64decode(val))
+            else:
+                processed[key] = val
         elif key in ("mir", "codex", "insight") and val is not None:
-            processed[key] = encode_std1k(val if isinstance(val, str) else json.dumps(val)) if encode else val
+            if encode:
+                if not isinstance(val, str):
+                    val = json.dumps(val)
+                processed[key] = encode_std1k(val)
+            else:
+                processed[key] = val
         else:
             processed[key] = val
     return processed
 
-def decode_row_for_api(row):
-    for k in list(row.keys()):
-        if k == "images" and row[k]:
-            row[k] = base64.b64encode(decode_std10k(row[k])).decode('ascii')
-        elif k in ("mir", "codex", "insight") and row[k]:
-            row[k] = decode_std1k(row[k])
+def decode_row(row):
+    for k, v in list(row.items()):
+        if k == "images" and v:
+            row[k] = base64.b64encode(decode_std10k(v)).decode("ascii")
+        elif k in ("mir", "codex", "insight") and v:
+            row[k] = decode_std1k(v)
     return row
 
 def enforce_read_first():
     if not READ_CONTEXT["loaded"] or (time.time() - READ_CONTEXT["timestamp"] > READ_TIMEOUT):
         raise PermissionError("Must read tables first")
 
-# ---- Auto-Wake & Health ----
-@app.before_request
-def wake_once():
-    global AWAKE_FLAG
-    if not AWAKE_FLAG:
-        AWAKE_FLAG = True
-        try:
-            print("Waking self...")
-            requests.get("https://cleanlight-backend.onrender.com/health", timeout=5)
-        except Exception as e:
-            print(f"Self-wake failed: {e}")
 
+# --- Routes ---
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
 
-# ---- Routes ----
-@app.route('/flask/select_full_table', methods=['GET'])
+
+@app.route("/flask/select_full_table", methods=["GET"])
 def select_full_table():
-    table = request.args.get('table')
+    table = request.args.get("table")
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Table not allowed"}), 400
 
-    limit, offset, first_chunk = 500, 0, True
-    READ_CONTEXT.update({"loaded": True, "timestamp": time.time()})
+    limit, offset = 500, 0
+    first_chunk = True
+    rows_fetched = 0
 
     @stream_with_context
     def generate():
-        nonlocal offset, first_chunk
+        nonlocal offset, first_chunk, rows_fetched
         yield "["
         while True:
             r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}&offset={offset}", headers=HEADERS)
+            if r.status_code != 200:
+                yield json.dumps({"error": r.text})
+                break
             chunk = r.json()
             if not chunk:
                 break
             for row in chunk:
                 if not first_chunk:
                     yield ","
-                yield json.dumps(decode_row_for_api(row))
+                yield json.dumps(decode_row(row))
                 first_chunk = False
+                rows_fetched += 1
             if len(chunk) < limit:
                 break
             offset += limit
         yield "]"
+        if rows_fetched > 0:
+            READ_CONTEXT.update({"loaded": True, "timestamp": time.time()})
 
-    return Response(generate(), mimetype='application/json')
+    return Response(generate(), mimetype="application/json")
 
-@app.route('/flask/insert', methods=['POST'])
+
+@app.route("/flask/insert", methods=["POST"])
 def insert():
-    table = request.args.get('table')
+    table = request.args.get("table")
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Table not allowed"}), 400
-    enforce_read_first()
-
-    body = request.get_json(force=True)
-    if "fields" in body:
-        body = body["fields"]
-
-    encoded = process_fields(body, encode=True, table=table)
-    r = requests.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=encoded)
-
     try:
-        # Try to parse JSON normally
-        return jsonify(r.json()), r.status_code
-    except ValueError:
-        # If Supabase sent empty or non-JSON, show raw text for debugging
-        return jsonify({
-            "status": r.status_code,
-            "raw_text": r.text,
-            "sent_payload": encoded
-        }), r.status_code
+        enforce_read_first()
+    except PermissionError as e:
+        return jsonify({"error": str(e)}), 403
+
+    body = request.get_json(force=True).get("fields", {})
+    encoded = process_fields(body, table, encode=True)
+    r = requests.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=encoded)
+    return jsonify(r.json()), r.status_code
 
 
-@app.route('/flask/update', methods=['PATCH'])
+@app.route("/flask/update", methods=["PATCH"])
 def update():
-    table = request.args.get('table')
-    col = request.args.get('col')
-    val = request.args.get('val')
-    if table not in ALLOWED_TABLES or not (col and val):
+    table = request.args.get("table")
+    col = request.args.get("col")
+    val = request.args.get("val")
+    if table not in ALLOWED_TABLES or not col or not val:
         return jsonify({"error": "Invalid params"}), 400
-    enforce_read_first()
+    try:
+        enforce_read_first()
+    except PermissionError as e:
+        return jsonify({"error": str(e)}), 403
 
-    body = request.get_json(force=True)
-    if "fields" in body:
-        body = body["fields"]
-
-    encoded = process_fields(body, encode=True, table=table)
+    body = request.get_json(force=True).get("fields", {})
+    encoded = process_fields(body, table, encode=True)
     r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}", headers=HEADERS, json=encoded)
     return jsonify(r.json()), r.status_code
 
-@app.route('/flask/append', methods=['PATCH'])
+
+@app.route("/flask/append", methods=["PATCH"])
 def append():
-    table = request.args.get('table')
-    col = request.args.get('col')
-    val = request.args.get('val')
-    if table not in ALLOWED_TABLES or not (col and val):
+    table = request.args.get("table")
+    col = request.args.get("col")
+    val = request.args.get("val")
+    if table not in ALLOWED_TABLES or not col or not val:
         return jsonify({"error": "Invalid params"}), 400
-    enforce_read_first()
+    try:
+        enforce_read_first()
+    except PermissionError as e:
+        return jsonify({"error": str(e)}), 403
 
-    existing = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}", headers=HEADERS).json()
-    if not existing:
+    existing = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}", headers=HEADERS)
+    if existing.status_code != 200:
+        return jsonify({"error": existing.text}), existing.status_code
+    data = existing.json()
+    if not data:
         return jsonify({"error": "Row not found"}), 404
-    decoded = decode_row_for_api(existing[0])
 
-    body = request.get_json(force=True)
-    if "fields" in body:
-        body = body["fields"]
-
-    for k, v in body.items():
+    decoded = decode_row(data[0])
+    updates = request.get_json(force=True).get("fields", {})
+    for k, v in updates.items():
         if isinstance(decoded.get(k), dict) and isinstance(v, dict):
             decoded[k].update(v)
         else:
             decoded[k] = v
 
-    encoded = process_fields(decoded, encode=True, table=table)
+    encoded = process_fields(decoded, table, encode=True)
     r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}", headers=HEADERS, json=encoded)
     return jsonify(r.json()), r.status_code
 
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)

@@ -20,7 +20,7 @@ ALLOWED_FIELDS = {
 }
 ALLOWED_TABLES = set(ALLOWED_FIELDS.keys())
 
-# ---- Base alphabets ----
+# ---- Encoding helpers ----
 def get_base_alphabet(n):
     safe = []
     for codepoint in range(0x20, 0x2FFFF):
@@ -39,7 +39,6 @@ def get_base_alphabet(n):
 BASE1K = get_base_alphabet(1000)
 BASE10K = get_base_alphabet(10000)
 
-# ---- Encode/Decode ----
 def int_to_baseN(num, alphabet):
     if num == 0:
         return alphabet[0]
@@ -64,9 +63,12 @@ def encode_std1k(plaintext: str) -> str:
     return int_to_baseN(int.from_bytes(compressed, 'big'), BASE1K)
 
 def decode_std1k(std1k_str: str) -> str:
-    as_int = baseN_to_int(std1k_str, BASE1K)
-    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
-    return zstd.ZstdDecompressor().decompress(compressed).decode('utf-8')
+    try:
+        as_int = baseN_to_int(std1k_str, BASE1K)
+        compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
+        return zstd.ZstdDecompressor().decompress(compressed).decode('utf-8')
+    except Exception:
+        return std1k_str  # return as-is if decoding fails
 
 def encode_std10k(image_bytes: bytes) -> str:
     cctx = zstd.ZstdCompressor()
@@ -74,9 +76,12 @@ def encode_std10k(image_bytes: bytes) -> str:
     return int_to_baseN(int.from_bytes(compressed, 'big'), BASE10K)
 
 def decode_std10k(std10k_str: str) -> bytes:
-    as_int = baseN_to_int(std10k_str, BASE10K)
-    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
-    return zstd.ZstdDecompressor().decompress(compressed)
+    try:
+        as_int = baseN_to_int(std10k_str, BASE10K)
+        compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
+        return zstd.ZstdDecompressor().decompress(compressed)
+    except Exception:
+        return b''
 
 # ---- Safe decoding ----
 def decode_row(row):
@@ -89,10 +94,7 @@ def decode_row(row):
             except Exception:
                 pass
         elif k in ("mir", "codex", "insight") and row[k]:
-            try:
-                row[k] = decode_std1k(row[k])
-            except Exception:
-                pass
+            row[k] = decode_std1k(row[k])
     return row
 
 # ---- Field processing ----
@@ -111,36 +113,6 @@ def process_fields(data, table):
             processed[key] = val
     return processed
 
-# ---- Streaming table reader ----
-def stream_table_data(table, where=None):
-    page_size = 50
-    offset = 0
-    yield "["  # start JSON array
-    first_chunk = True
-
-    while True:
-        query = f"{SUPABASE_URL}/rest/v1/{table}?offset={offset}&limit={page_size}"
-        if where:
-            query += f"&{where['col']}=eq.{where['val']}"
-        r = requests.get(query, headers=HEADERS)
-        rows = r.json()
-
-        if not rows:
-            break
-
-        for row in rows:
-            decoded = decode_row(row)
-            if not first_chunk:
-                yield ","
-            yield json.dumps(decoded)
-            first_chunk = False
-
-        if len(rows) < page_size:
-            break
-        offset += page_size
-
-    yield "]"  # end JSON array
-
 # ---- CRUD endpoint ----
 @app.route("/flask/command", methods=["POST"])
 def command():
@@ -155,37 +127,33 @@ def command():
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Invalid table"}), 400
 
-     if action == "read_table":
+    # ---- Streaming read_table ----
+    if action == "read_table":
         def generate():
             yield "["
             first = True
-            with requests.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, stream=True) as r:
-                r.raise_for_status()
-                data = r.json()
-                for row in data:
-                    decoded = decode_row(row)
-                    if not first:
-                        yield ","
-                    yield json.dumps(decoded)
-                    first = False
+            r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS)
+            for row in r.json():
+                if not first:
+                    yield ","
+                yield json.dumps(decode_row(row))
+                first = False
             yield "]"
         return Response(stream_with_context(generate()), content_type="application/json")
 
+    # ---- Streaming read_row ----
     if action == "read_row":
         if not where:
             return jsonify({"error": "Missing 'where'"}), 400
         def generate():
             yield "["
             first = True
-            with requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS, stream=True) as r:
-                r.raise_for_status()
-                data = r.json()
-                for row in data:
-                    decoded = decode_row(row)
-                    if not first:
-                        yield ","
-                    yield json.dumps(decoded)
-                    first = False
+            r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS)
+            for row in r.json():
+                if not first:
+                    yield ","
+                yield json.dumps(decode_row(row))
+                first = False
             yield "]"
         return Response(stream_with_context(generate()), content_type="application/json")
 
@@ -225,4 +193,3 @@ def command():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
-

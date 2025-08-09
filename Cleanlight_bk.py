@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import requests, json, os, base64, zstandard as zstd
 from datetime import datetime
+import tempfile
 
 app = Flask(__name__)
 
@@ -21,34 +22,10 @@ ALLOWED_FIELDS = {
 ALLOWED_TABLES = set(ALLOWED_FIELDS.keys())
 
 # ---- Encoding helpers ----
-def is_base1k_string(s):
-    """Quick check: True if all characters are in BASE1K alphabet."""
-    if not isinstance(s, str):
-        return False
-    return all(ch in BASE1K for ch in s)
-
-def decode_row(row):
-    for k in list(row.keys()):
-        if k == "images" and row[k]:
-            try:
-                row[k] = base64.b64encode(decode_std10k(row[k])).decode('ascii')
-            except Exception:
-                pass  # leave as-is if bad data
-        elif k in ("mir", "codex", "insight") and row[k]:
-            if is_base1k_string(row[k]):
-                try:
-                    row[k] = decode_std1k(row[k])
-                except Exception:
-                    pass
-            # else: already human readable, leave as-is
-        # cognition is already plain text — leave untouched
-    return row
-
 def get_base_alphabet(n):
     safe = []
     for codepoint in range(0x20, 0x2FFFF):
         ch = chr(codepoint)
-        name = ch.encode("unicode_escape").decode()
         if (
             0xD800 <= codepoint <= 0xDFFF or
             0xFDD0 <= codepoint <= 0xFDEF or
@@ -87,9 +64,12 @@ def encode_std1k(plaintext: str) -> str:
     return int_to_baseN(int.from_bytes(compressed, 'big'), BASE1K)
 
 def decode_std1k(std1k_str: str) -> str:
-    as_int = baseN_to_int(std1k_str, BASE1K)
-    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
-    return zstd.ZstdDecompressor().decompress(compressed).decode('utf-8')
+    try:
+        as_int = baseN_to_int(std1k_str, BASE1K)
+        compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
+        return zstd.ZstdDecompressor().decompress(compressed).decode('utf-8')
+    except Exception:
+        return std1k_str  # Return as-is if not valid
 
 def encode_std10k(image_bytes: bytes) -> str:
     cctx = zstd.ZstdCompressor()
@@ -101,7 +81,6 @@ def decode_std10k(std10k_str: str) -> bytes:
     compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
     return zstd.ZstdDecompressor().decompress(compressed)
 
-# ---- Field processing ----
 def process_fields(data, table):
     processed = {}
     for key, val in data.items():
@@ -117,6 +96,25 @@ def process_fields(data, table):
             processed[key] = val
     return processed
 
+def decode_row(row):
+    for k in list(row.keys()):
+        if k == "images" and row[k]:
+            try:
+                row[k] = base64.b64encode(decode_std10k(row[k])).decode('ascii')
+            except Exception:
+                pass
+        elif k in ("mir", "codex", "insight") and row[k]:
+            row[k] = decode_std1k(row[k])
+    return row
+
+def generate_export(table):
+    r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS)
+    rows = [decode_row(row) for row in r.json()]
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".json", dir="/tmp")
+    with open(temp_file.name, "w", encoding="utf-8") as f:
+        json.dump(rows, f, ensure_ascii=False)
+    return f"/exports/{os.path.basename(temp_file.name)}"
+
 # ---- CRUD endpoint ----
 @app.route("/flask/command", methods=["POST"])
 def command():
@@ -125,38 +123,29 @@ def command():
     table = payload.get("table")
     where = payload.get("where")
     fields = payload.get("fields")
-    limit = payload.get("limit")
-    offset = payload.get("offset")
 
     if action not in ["read_table", "read_row", "insert", "update", "append"]:
         return jsonify({"error": "Invalid action"}), 400
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Invalid table"}), 400
 
-    # Handle paging query params
-    limit_clause = f"&limit={limit}" if limit else ""
-    offset_clause = f"&offset={offset}" if offset else ""
-
+    # Read Table (safe mode)
     if action == "read_table":
-        r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/{table}?select=*&order=id.asc{limit_clause}{offset_clause}",
-            headers=HEADERS
-        )
-        if r.status_code != 200:
-            return jsonify({"error": "Database read error"}), r.status_code
-        return jsonify([decode_row(row) for row in r.json()])
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?select=*&order=id.asc&limit=500", headers=HEADERS)
+        rows = [decode_row(row) for row in r.json()]
+        if len(rows) >= 500:
+            export_url = generate_export(table)
+            return jsonify({"rows": rows, "more_data": True, "export_url": export_url})
+        return jsonify(rows)
 
+    # Read Row
     if action == "read_row":
         if not where:
             return jsonify({"error": "Missing 'where'"}), 400
-        r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}&order=id.asc{limit_clause}{offset_clause}",
-            headers=HEADERS
-        )
-        if r.status_code != 200:
-            return jsonify({"error": "Database read error"}), r.status_code
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS)
         return jsonify([decode_row(row) for row in r.json()])
 
+    # Insert
     if action == "insert":
         if not fields:
             return jsonify({"error": "Missing 'fields'"}), 400
@@ -164,6 +153,7 @@ def command():
         r = requests.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=encoded)
         return jsonify(r.json()), r.status_code
 
+    # Update
     if action == "update":
         if not where or not fields:
             return jsonify({"error": "Missing 'where' or 'fields'"}), 400
@@ -171,6 +161,7 @@ def command():
         r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS, json=encoded)
         return jsonify(r.json()), r.status_code
 
+    # Append
     if action == "append":
         if not where or not fields:
             return jsonify({"error": "Missing 'where' or 'fields'"}), 400
@@ -187,12 +178,7 @@ def command():
         r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS, json=encoded)
         return jsonify(r.json()), r.status_code
 
-    return jsonify({"error": "Unknown error"}), 500
-
 # ---- Health check ----
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
-
-
-

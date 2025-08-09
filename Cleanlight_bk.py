@@ -3,6 +3,7 @@ print("App started — hardened with read-first + pagination + full read + clank
 import traceback
 from urllib.parse import urlencode
 from flask import Flask, request, jsonify
+from flask import Response, stream_with_context
 import requests
 import os
 import unicodedata
@@ -214,26 +215,42 @@ def supa_select_full_table():
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Table not allowed"}), 400
 
-    all_rows = []
     limit = 500
     offset = 0
 
-    while True:
-        r = safe_request("GET", f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}&offset={offset}", headers=HEADERS)
-        if isinstance(r, tuple):
-            return r
-        chunk = r.json()
-        if not chunk:
-            break
-        chunk = [decode_row_for_api(row) for row in chunk]
-        all_rows.extend(chunk)
-        if len(chunk) < limit:
-            break
-        offset += limit
+    @stream_with_context
+    def generate():
+        nonlocal offset
+        first_chunk = True
 
-    READ_CONTEXT["loaded"] = True
-    READ_CONTEXT["timestamp"] = time.time()
-    return jsonify({"data": all_rows}), 200
+        # Set the read-first flag immediately
+        READ_CONTEXT["loaded"] = True
+        READ_CONTEXT["timestamp"] = time.time()
+
+        yield "["  # Start JSON array
+
+        while True:
+            r = safe_request("GET", f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}&offset={offset}", headers=HEADERS)
+            if isinstance(r, tuple):
+                # Error tuple from safe_request
+                yield "]"
+                return
+            chunk = r.json()
+            if not chunk:
+                break
+            for row in chunk:
+                decoded = decode_row_for_api(row)
+                if not first_chunk:
+                    yield ","
+                yield json.dumps(decoded)
+                first_chunk = False
+            if len(chunk) < limit:
+                break
+            offset += limit
+
+        yield "]"  # End JSON array
+
+    return Response(generate(), mimetype='application/json')
 
 @app.route('/supa/insert', methods=['POST'])
 def supa_insert():
@@ -370,6 +387,7 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 

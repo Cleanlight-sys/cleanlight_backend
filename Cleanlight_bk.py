@@ -1,5 +1,6 @@
 print("App started — hardened with read-first + pagination + full read + clanker proxy", flush=True)
 
+import traceback
 from flask import Flask, request, jsonify
 import requests
 import os
@@ -297,67 +298,60 @@ def supa_append():
 # ------------------ CLANKER UNIVERSAL ENDPOINT ------------------
 @app.route('/clanker', methods=['POST'])
 def clanker():
-    """
-    Raw universal pass-through for AI calls.
-    Accepts *any* body format — JSON, stringified JSON, etc.
-    AI can send a plain text blob, and we'll parse it here.
-    Expected structure once parsed:
-      {
-        "method": "GET" | "POST" | "PATCH" | "DELETE",
-        "path": "/supa/select",
-        "params": { ... },
-        "json": { ... }
-      }
-    """
     try:
-        # Get raw request body
-        raw_body = request.get_data(as_text=True).strip()
-
-        # Try parsing as JSON
+        # --- Parse JSON ---
         try:
-            parsed = json.loads(raw_body)
-        except Exception:
-            return jsonify({"error": "Invalid JSON in request body"}), 400
+            incoming = request.get_json(force=True)
+        except Exception as e:
+            app.logger.error(f"[CLANKER] Failed to parse JSON: {str(e)}")
+            return jsonify({"error": "Invalid JSON", "details": str(e)}), 400
 
-        # If wrapped in "body", unpack
-        if isinstance(parsed, dict) and "body" in parsed:
-            data = parsed["body"]
-        else:
-            data = parsed
+        app.logger.info(f"[CLANKER] Incoming raw payload: {incoming}")
 
-        method = data.get('method')
-        path = data.get('path')
-        params = data.get('params', {}) or {}
-        json_body = data.get('json', {}) or {}
+        # --- Validate required fields ---
+        method = incoming.get("method")
+        path = incoming.get("path")
+        params = incoming.get("params", {})
+        json_body = incoming.get("json", {})
 
         if not method or not path:
-            return jsonify({"error": "Missing 'method' or 'path'"}), 400
+            return jsonify({"error": "Missing required fields 'method' or 'path'"}), 400
+        if not isinstance(params, dict):
+            return jsonify({"error": "'params' must be a dictionary"}), 400
+        if not isinstance(json_body, dict):
+            return jsonify({"error": "'json' must be a dictionary"}), 400
 
-        # Build full target URL
-        target_url = f"{request.host_url.rstrip('/')}{path}"
+        # --- Build target URL ---
+        # Ensures we always hit our own server
+        target_url = request.host_url.rstrip('/') + path
+        app.logger.info(f"[CLANKER] Forwarding to {target_url} with method={method}, params={params}")
 
-        # Make the internal request
-        resp = requests.request(
-            method=method.upper(),
-            url=target_url,
-            params=params if isinstance(params, dict) else {},
-            json=json_body if isinstance(json_body, dict) else {},
-            headers={"Content-Type": "application/json", "Accept": "application/json"}
-        )
-
+        # --- Make the internal request ---
         try:
-            resp_data = resp.json()
-        except Exception:
-            resp_data = resp.text
+            r = requests.request(
+                method=method.upper(),
+                url=target_url,
+                params=params,
+                json=json_body,
+                headers={"Content-Type": "application/json"},
+                timeout=30
+            )
+        except requests.RequestException as e:
+            app.logger.error(f"[CLANKER] Internal request failed: {str(e)}")
+            return jsonify({"error": "Internal request to endpoint failed", "details": str(e)}), 502
 
-        return jsonify({
-            "status_code": resp.status_code,
-            "response": resp_data
-        }), 200
+        # --- Relay response ---
+        try:
+            return jsonify(r.json()), r.status_code
+        except Exception:
+            app.logger.warning(f"[CLANKER] Non-JSON response relayed as text")
+            return r.text, r.status_code
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+        # Catch-all safety net
+        tb = traceback.format_exc()
+        app.logger.error(f"[CLANKER] Unexpected error: {str(e)}\nTraceback:\n{tb}")
+        return jsonify({"error": "Unexpected server error", "details": str(e)}), 500
 
 @app.route('/')
 def index():
@@ -365,6 +359,7 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 

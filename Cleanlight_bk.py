@@ -63,12 +63,9 @@ def encode_std1k(plaintext: str) -> str:
     return int_to_baseN(int.from_bytes(compressed, 'big'), BASE1K)
 
 def decode_std1k(std1k_str: str) -> str:
-    try:
-        as_int = baseN_to_int(std1k_str, BASE1K)
-        compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
-        return zstd.ZstdDecompressor().decompress(compressed).decode('utf-8')
-    except Exception:
-        return std1k_str  # return as-is if decoding fails
+    as_int = baseN_to_int(std1k_str, BASE1K)
+    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
+    return zstd.ZstdDecompressor().decompress(compressed).decode('utf-8')
 
 def encode_std10k(image_bytes: bytes) -> str:
     cctx = zstd.ZstdCompressor()
@@ -76,25 +73,20 @@ def encode_std10k(image_bytes: bytes) -> str:
     return int_to_baseN(int.from_bytes(compressed, 'big'), BASE10K)
 
 def decode_std10k(std10k_str: str) -> bytes:
-    try:
-        as_int = baseN_to_int(std10k_str, BASE10K)
-        compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
-        return zstd.ZstdDecompressor().decompress(compressed)
-    except Exception:
-        return b''
+    as_int = baseN_to_int(std10k_str, BASE10K)
+    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
+    return zstd.ZstdDecompressor().decompress(compressed)
 
-# ---- Safe decoding ----
+# ---- Decoding with safety ----
 def decode_row(row):
-    if not isinstance(row, dict):
-        return row
     for k in list(row.keys()):
-        if k == "images" and row[k]:
-            try:
+        try:
+            if k == "images" and row[k]:
                 row[k] = base64.b64encode(decode_std10k(row[k])).decode('ascii')
-            except Exception:
-                pass
-        elif k in ("mir", "codex", "insight") and row[k]:
-            row[k] = decode_std1k(row[k])
+            elif k in ("mir", "codex", "insight") and row[k]:
+                row[k] = decode_std1k(row[k])
+        except Exception:
+            pass
     return row
 
 # ---- Field processing ----
@@ -121,42 +113,29 @@ def command():
     table = payload.get("table")
     where = payload.get("where")
     fields = payload.get("fields")
+    limit = payload.get("limit", 50)
+    offset = payload.get("offset", 0)
 
     if action not in ["read_table", "read_row", "insert", "update", "append"]:
         return jsonify({"error": "Invalid action"}), 400
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Invalid table"}), 400
 
-    # ---- Streaming read_table ----
+    # READ TABLE (paged)
     if action == "read_table":
-        def generate():
-            yield "["
-            first = True
-            r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS)
-            for row in r.json():
-                if not first:
-                    yield ","
-                yield json.dumps(decode_row(row))
-                first = False
-            yield "]"
-        return Response(stream_with_context(generate()), content_type="application/json")
+        url = f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}&offset={offset}"
+        r = requests.get(url, headers=HEADERS)
+        return jsonify([decode_row(row) for row in r.json()])
 
-    # ---- Streaming read_row ----
+    # READ ROW (paged if multiple match)
     if action == "read_row":
         if not where:
             return jsonify({"error": "Missing 'where'"}), 400
-        def generate():
-            yield "["
-            first = True
-            r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS)
-            for row in r.json():
-                if not first:
-                    yield ","
-                yield json.dumps(decode_row(row))
-                first = False
-            yield "]"
-        return Response(stream_with_context(generate()), content_type="application/json")
+        url = f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}&limit={limit}&offset={offset}"
+        r = requests.get(url, headers=HEADERS)
+        return jsonify([decode_row(row) for row in r.json()])
 
+    # INSERT
     if action == "insert":
         if not fields:
             return jsonify({"error": "Missing 'fields'"}), 400
@@ -164,6 +143,7 @@ def command():
         r = requests.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=encoded)
         return jsonify(r.json()), r.status_code
 
+    # UPDATE
     if action == "update":
         if not where or not fields:
             return jsonify({"error": "Missing 'where' or 'fields'"}), 400
@@ -171,6 +151,7 @@ def command():
         r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS, json=encoded)
         return jsonify(r.json()), r.status_code
 
+    # APPEND
     if action == "append":
         if not where or not fields:
             return jsonify({"error": "Missing 'where' or 'fields'"}), 400

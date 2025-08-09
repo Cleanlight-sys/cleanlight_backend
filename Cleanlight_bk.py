@@ -97,6 +97,9 @@ def process_fields(data, table):
     return processed
 
 def decode_row(row):
+    """Safely decode a row if it's a dict, else return as-is."""
+    if not isinstance(row, dict):
+        return row
     for k in list(row.keys()):
         if k == "images" and row[k]:
             try:
@@ -104,14 +107,12 @@ def decode_row(row):
             except Exception:
                 pass
         elif k in ("mir", "codex", "insight") and row[k]:
-            row[k] = decode_std1k(row[k])
+            try:
+                row[k] = decode_std1k(row[k])
+            except Exception:
+                pass
     return row
 
-def wrap_response(data):
-    """Always wrap in an object to match OpenAPI schema."""
-    if isinstance(data, dict):
-        return data
-    return {"data": data}
 
 # ---- CRUD endpoint ----
 @app.route("/flask/command", methods=["POST"])
@@ -122,53 +123,31 @@ def command():
     where = payload.get("where")
     fields = payload.get("fields")
 
+    # Basic validation
     if action not in ["read_table", "read_row", "insert", "update", "append"]:
-        return jsonify(wrap_response({"error": "Invalid action"})), 400
+        return jsonify({"error": "Invalid action"}), 400
     if table not in ALLOWED_TABLES:
-        return jsonify(wrap_response({"error": "Invalid table"})), 400
+        return jsonify({"error": "Invalid table"}), 400
 
+    # Execute action
     if action == "read_table":
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?select=*&order=id.asc&limit=500", headers=HEADERS)
-        rows = [decode_row(row) for row in r.json()]
-        return jsonify(wrap_response(rows))
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS)
+        data = r.json()
+        if not isinstance(data, list):
+            return jsonify({"error": "Unexpected response", "data": data}), 500
+        return jsonify([decode_row(row) for row in data])
 
     if action == "read_row":
         if not where:
-            return jsonify(wrap_response({"error": "Missing 'where'"})), 400
+            return jsonify({"error": "Missing 'where'"}), 400
         r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS)
-        return jsonify(wrap_response([decode_row(row) for row in r.json()]))
-
-    if action == "insert":
-        if not fields:
-            return jsonify(wrap_response({"error": "Missing 'fields'"})), 400
-        encoded = process_fields(fields, table)
-        r = requests.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=encoded)
-        return jsonify(wrap_response(r.json())), r.status_code
-
-    if action == "update":
-        if not where or not fields:
-            return jsonify(wrap_response({"error": "Missing 'where' or 'fields'"})), 400
-        encoded = process_fields(fields, table)
-        r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS, json=encoded)
-        return jsonify(wrap_response(r.json())), r.status_code
-
-    if action == "append":
-        if not where or not fields:
-            return jsonify(wrap_response({"error": "Missing 'where' or 'fields'"})), 400
-        existing = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS).json()
-        if not existing:
-            return jsonify(wrap_response({"error": "Row not found"})), 404
-        decoded = decode_row(existing[0])
-        for k, v in fields.items():
-            if isinstance(decoded.get(k), dict) and isinstance(v, dict):
-                decoded[k].update(v)
-            else:
-                decoded[k] = v
-        encoded = process_fields(decoded, table)
-        r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS, json=encoded)
-        return jsonify(wrap_response(r.json())), r.status_code
+        data = r.json()
+        if not isinstance(data, list):
+            return jsonify({"error": "Unexpected response", "data": data}), 500
+        return jsonify([decode_row(row) for row in data])
 
 # ---- Health check ----
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
+

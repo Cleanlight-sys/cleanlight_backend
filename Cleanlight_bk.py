@@ -36,6 +36,23 @@ ALLOWED_FIELDS = {
 ALLOWED_TABLES = set(ALLOWED_FIELDS.keys())
 
 # ------------------ LOGGING & MERGE ------------------
+@app.route('/echo_test', methods=['POST'])
+def echo_test():
+    """
+    Simple echo endpoint to test connectivity and payload handling.
+    Returns exactly what you sent, plus server timestamp.
+    """
+    try:
+        incoming = request.get_json(force=True, silent=False)
+    except Exception as e:
+        return jsonify({"error": f"Invalid JSON: {str(e)}"}), 400
+
+    return jsonify({
+        "status": "ok",
+        "received": incoming,
+        "server_time": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
+    }), 200
+
 @app.before_request
 def log_and_merge():
     app.logger.info(f"{request.method} {request.path} args={dict(request.args)} body={request.get_data(as_text=True)}")
@@ -359,6 +376,7 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 

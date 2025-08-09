@@ -1,7 +1,6 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context
 import requests, json, os, base64, zstandard as zstd
 from datetime import datetime
-import tempfile
 
 app = Flask(__name__)
 
@@ -21,7 +20,7 @@ ALLOWED_FIELDS = {
 }
 ALLOWED_TABLES = set(ALLOWED_FIELDS.keys())
 
-# ---- Encoding helpers ----
+# ---- Base alphabets ----
 def get_base_alphabet(n):
     safe = []
     for codepoint in range(0x20, 0x2FFFF):
@@ -40,6 +39,7 @@ def get_base_alphabet(n):
 BASE1K = get_base_alphabet(1000)
 BASE10K = get_base_alphabet(10000)
 
+# ---- Encode/Decode ----
 def int_to_baseN(num, alphabet):
     if num == 0:
         return alphabet[0]
@@ -64,12 +64,9 @@ def encode_std1k(plaintext: str) -> str:
     return int_to_baseN(int.from_bytes(compressed, 'big'), BASE1K)
 
 def decode_std1k(std1k_str: str) -> str:
-    try:
-        as_int = baseN_to_int(std1k_str, BASE1K)
-        compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
-        return zstd.ZstdDecompressor().decompress(compressed).decode('utf-8')
-    except Exception:
-        return std1k_str
+    as_int = baseN_to_int(std1k_str, BASE1K)
+    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
+    return zstd.ZstdDecompressor().decompress(compressed).decode('utf-8')
 
 def encode_std10k(image_bytes: bytes) -> str:
     cctx = zstd.ZstdCompressor()
@@ -81,23 +78,8 @@ def decode_std10k(std10k_str: str) -> bytes:
     compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
     return zstd.ZstdDecompressor().decompress(compressed)
 
-def process_fields(data, table):
-    processed = {}
-    for key, val in data.items():
-        if key not in ALLOWED_FIELDS[table]:
-            raise ValueError(f"Field {key} not allowed for table {table}")
-        if key in ("id", "cognition", "pointer_net"):
-            processed[key] = val
-        elif key == "images" and val is not None:
-            processed[key] = encode_std10k(base64.b64decode(val))
-        elif key in ("mir", "codex", "insight") and val is not None:
-            processed[key] = encode_std1k(val if isinstance(val, str) else json.dumps(val))
-        else:
-            processed[key] = val
-    return processed
-
+# ---- Safe decoding ----
 def decode_row(row):
-    """Safely decode a row if it's a dict, else return as-is."""
     if not isinstance(row, dict):
         return row
     for k in list(row.keys()):
@@ -113,6 +95,51 @@ def decode_row(row):
                 pass
     return row
 
+# ---- Field processing ----
+def process_fields(data, table):
+    processed = {}
+    for key, val in data.items():
+        if key not in ALLOWED_FIELDS[table]:
+            raise ValueError(f"Field {key} not allowed for table {table}")
+        if key in ("id", "cognition", "pointer_net"):
+            processed[key] = val
+        elif key == "images" and val is not None:
+            processed[key] = encode_std10k(base64.b64decode(val))
+        elif key in ("mir", "codex", "insight") and val is not None:
+            processed[key] = encode_std1k(val if isinstance(val, str) else json.dumps(val))
+        else:
+            processed[key] = val
+    return processed
+
+# ---- Streaming table reader ----
+def stream_table_data(table, where=None):
+    page_size = 50
+    offset = 0
+    yield "["  # start JSON array
+    first_chunk = True
+
+    while True:
+        query = f"{SUPABASE_URL}/rest/v1/{table}?offset={offset}&limit={page_size}"
+        if where:
+            query += f"&{where['col']}=eq.{where['val']}"
+        r = requests.get(query, headers=HEADERS)
+        rows = r.json()
+
+        if not rows:
+            break
+
+        for row in rows:
+            decoded = decode_row(row)
+            if not first_chunk:
+                yield ","
+            yield json.dumps(decoded)
+            first_chunk = False
+
+        if len(rows) < page_size:
+            break
+        offset += page_size
+
+    yield "]"  # end JSON array
 
 # ---- CRUD endpoint ----
 @app.route("/flask/command", methods=["POST"])
@@ -123,45 +150,18 @@ def command():
     where = payload.get("where")
     fields = payload.get("fields")
 
-    # Basic validation
     if action not in ["read_table", "read_row", "insert", "update", "append"]:
         return jsonify({"error": "Invalid action"}), 400
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Invalid table"}), 400
 
-    # Execute action
     if action == "read_table":
-        # Pagination: get 50 rows at a time until none left
-        limit = 50
-        offset = 0
-        all_rows = []
-        while True:
-            r = requests.get(
-                f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}&offset={offset}",
-                headers=HEADERS
-            )
-            data = r.json()
-            if not isinstance(data, list):
-                return jsonify({"error": "Unexpected response", "data": data}), 500
-            if not data:
-                break
-            all_rows.extend([decode_row(row) for row in data])
-            if len(data) < limit:
-                break
-            offset += limit
-        return jsonify(all_rows)
+        return Response(stream_with_context(stream_table_data(table)), mimetype="application/json")
 
     if action == "read_row":
         if not where:
             return jsonify({"error": "Missing 'where'"}), 400
-        r = requests.get(
-            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}",
-            headers=HEADERS
-        )
-        data = r.json()
-        if not isinstance(data, list):
-            return jsonify({"error": "Unexpected response", "data": data}), 500
-        return jsonify([decode_row(row) for row in data])
+        return Response(stream_with_context(stream_table_data(table, where=where)), mimetype="application/json")
 
     if action == "insert":
         if not fields:
@@ -174,19 +174,13 @@ def command():
         if not where or not fields:
             return jsonify({"error": "Missing 'where' or 'fields'"}), 400
         encoded = process_fields(fields, table)
-        r = requests.patch(
-            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}",
-            headers=HEADERS, json=encoded
-        )
+        r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS, json=encoded)
         return jsonify(r.json()), r.status_code
 
     if action == "append":
         if not where or not fields:
             return jsonify({"error": "Missing 'where' or 'fields'"}), 400
-        existing = requests.get(
-            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}",
-            headers=HEADERS
-        ).json()
+        existing = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS).json()
         if not existing:
             return jsonify({"error": "Row not found"}), 404
         decoded = decode_row(existing[0])
@@ -196,17 +190,12 @@ def command():
             else:
                 decoded[k] = v
         encoded = process_fields(decoded, table)
-        r = requests.patch(
-            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}",
-            headers=HEADERS, json=encoded
-        )
+        r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS, json=encoded)
         return jsonify(r.json()), r.status_code
 
     return jsonify({"error": "Unknown error"}), 500
-    
+
 # ---- Health check ----
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
-
-

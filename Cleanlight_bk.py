@@ -298,29 +298,37 @@ def supa_append():
 @app.route('/clanker', methods=['POST'])
 def clanker():
     """
-    Universal pass-through for AI calls (schema-friendly).
-    OpenAI will send:
-    {
-      "body": {
-        "method": "GET",
+    Raw universal pass-through for AI calls.
+    Accepts *any* body format — JSON, stringified JSON, etc.
+    AI can send a plain text blob, and we'll parse it here.
+    Expected structure once parsed:
+      {
+        "method": "GET" | "POST" | "PATCH" | "DELETE",
         "path": "/supa/select",
-        "params": { "table": "cleanlight_canvas", "limit": "10" },
-        "json": {}
+        "params": { ... },
+        "json": { ... }
       }
-    }
     """
     try:
-        raw_data = request.get_json(force=True) or {}
-        # If the payload is wrapped in 'body', unpack it
-        if "body" in raw_data and isinstance(raw_data["body"], dict):
-            data = raw_data["body"]
+        # Get raw request body
+        raw_body = request.get_data(as_text=True).strip()
+
+        # Try parsing as JSON
+        try:
+            parsed = json.loads(raw_body)
+        except Exception:
+            return jsonify({"error": "Invalid JSON in request body"}), 400
+
+        # If wrapped in "body", unpack
+        if isinstance(parsed, dict) and "body" in parsed:
+            data = parsed["body"]
         else:
-            data = raw_data
+            data = parsed
 
         method = data.get('method')
         path = data.get('path')
-        params = data.get('params', {})
-        json_body = data.get('json', {})
+        params = data.get('params', {}) or {}
+        json_body = data.get('json', {}) or {}
 
         if not method or not path:
             return jsonify({"error": "Missing 'method' or 'path'"}), 400
@@ -328,7 +336,7 @@ def clanker():
         # Build full target URL
         target_url = f"{request.host_url.rstrip('/')}{path}"
 
-        # Route the request internally
+        # Make the internal request
         resp = requests.request(
             method=method.upper(),
             url=target_url,
@@ -357,5 +365,6 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 

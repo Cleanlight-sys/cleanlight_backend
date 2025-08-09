@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
-import requests, json, os, time, base64, unicodedata, zstandard as zstd
+import requests, json, os, base64, zstandard as zstd
 from datetime import datetime
-from uuid import uuid4
 
 app = Flask(__name__)
 
@@ -21,29 +20,16 @@ ALLOWED_FIELDS = {
 }
 ALLOWED_TABLES = set(ALLOWED_FIELDS.keys())
 
-# ---- State store for interactive ops ----
-STATE = {}
-STATE_TIMEOUT = 300  # seconds
-
-def prune_state():
-    now = time.time()
-    expired = [k for k,v in STATE.items() if now - v["timestamp"] > STATE_TIMEOUT]
-    for k in expired:
-        del STATE[k]
-
 # ---- Encoding helpers ----
 def get_base_alphabet(n):
     safe = []
     for codepoint in range(0x20, 0x2FFFF):
         ch = chr(codepoint)
-        name = unicodedata.name(ch, "")
+        name = ch.encode("unicode_escape").decode()
         if (
             0xD800 <= codepoint <= 0xDFFF or
             0xFDD0 <= codepoint <= 0xFDEF or
-            codepoint & 0xFFFE == 0xFFFE or
-            "CONTROL" in name or "PRIVATE USE" in name or
-            "COMBINING" in name or "FORMAT" in name or
-            name == ""
+            codepoint & 0xFFFE == 0xFFFE
         ):
             continue
         safe.append(ch)
@@ -93,17 +79,17 @@ def decode_std10k(std10k_str: str) -> bytes:
     return zstd.ZstdDecompressor().decompress(compressed)
 
 # ---- Field processing ----
-def process_fields(data, encode=True, table=None):
+def process_fields(data, table):
     processed = {}
     for key, val in data.items():
         if key not in ALLOWED_FIELDS[table]:
-            raise ValueError(f"Field {key} not allowed")
+            raise ValueError(f"Field {key} not allowed for table {table}")
         if key in ("id", "cognition", "pointer_net"):
             processed[key] = val
         elif key == "images" and val is not None:
-            processed[key] = encode_std10k(base64.b64decode(val)) if encode else val
+            processed[key] = encode_std10k(base64.b64decode(val))
         elif key in ("mir", "codex", "insight") and val is not None:
-            processed[key] = encode_std1k(val if isinstance(val, str) else json.dumps(val)) if encode else val
+            processed[key] = encode_std1k(val if isinstance(val, str) else json.dumps(val))
         else:
             processed[key] = val
     return processed
@@ -116,45 +102,20 @@ def decode_row(row):
             row[k] = decode_std1k(row[k])
     return row
 
-# ---- Command endpoint ----
+# ---- CRUD endpoint ----
 @app.route("/flask/command", methods=["POST"])
 def command():
-    prune_state()
     payload = request.get_json(force=True) or {}
     action = payload.get("action")
     table = payload.get("table")
-    where = payload.get("where", {})
+    where = payload.get("where")
     fields = payload.get("fields")
-    token = payload.get("state_token")
 
-    # Resume from state if token provided
-    if token and token in STATE:
-        state = STATE[token]
-        action = action or state.get("action")
-        table = table or state.get("table")
-        where = where or state.get("where", {})
-        fields = fields or state.get("fields")
-        STATE[token].update({"action": action, "table": table, "where": where, "fields": fields})
-    else:
-        # New operation, validate basics
-        if not action:
-            t = str(uuid4())
-            STATE[t] = {"timestamp": time.time(), "table": table, "where": where, "fields": fields, "action": None}
-            return jsonify({"prompt": "What action do you want? (read_table, read_row, insert, update, append)", "state_token": t})
-        if not table:
-            t = str(uuid4())
-            STATE[t] = {"timestamp": time.time(), "action": action, "where": where, "fields": fields, "table": None}
-            return jsonify({"prompt": "Which table? (cleanlight_canvas, cleanlight_map)", "state_token": t})
-
-    # Now check for missing pieces
-    if action in ("insert", "update", "append") and not fields:
-        t = token or str(uuid4())
-        STATE[t] = {"timestamp": time.time(), "action": action, "table": table, "where": where, "fields": None}
-        return jsonify({"prompt": "Please provide fields to write.", "state_token": t})
-    if action in ("update", "append", "read_row") and not where:
-        t = token or str(uuid4())
-        STATE[t] = {"timestamp": time.time(), "action": action, "table": table, "fields": fields, "where": None}
-        return jsonify({"prompt": "Which row? Provide {\"col\": ..., \"val\": ...}", "state_token": t})
+    # Basic validation
+    if action not in ["read_table", "read_row", "insert", "update", "append"]:
+        return jsonify({"error": "Invalid action"}), 400
+    if table not in ALLOWED_TABLES:
+        return jsonify({"error": "Invalid table"}), 400
 
     # Execute action
     if action == "read_table":
@@ -162,35 +123,44 @@ def command():
         return jsonify([decode_row(row) for row in r.json()])
 
     if action == "read_row":
+        if not where:
+            return jsonify({"error": "Missing 'where'"}), 400
         r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS)
         return jsonify([decode_row(row) for row in r.json()])
 
     if action == "insert":
-        encoded = process_fields(fields, encode=True, table=table)
+        if not fields:
+            return jsonify({"error": "Missing 'fields'"}), 400
+        encoded = process_fields(fields, table)
         r = requests.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=encoded)
         return jsonify(r.json()), r.status_code
 
     if action == "update":
-        encoded = process_fields(fields, encode=True, table=table)
+        if not where or not fields:
+            return jsonify({"error": "Missing 'where' or 'fields'"}), 400
+        encoded = process_fields(fields, table)
         r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS, json=encoded)
         return jsonify(r.json()), r.status_code
 
     if action == "append":
+        if not where or not fields:
+            return jsonify({"error": "Missing 'where' or 'fields'"}), 400
         existing = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS).json()
         if not existing:
             return jsonify({"error": "Row not found"}), 404
         decoded = decode_row(existing[0])
-        for k,v in fields.items():
+        for k, v in fields.items():
             if isinstance(decoded.get(k), dict) and isinstance(v, dict):
                 decoded[k].update(v)
             else:
                 decoded[k] = v
-        encoded = process_fields(decoded, encode=True, table=table)
+        encoded = process_fields(decoded, table)
         r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS, json=encoded)
         return jsonify(r.json()), r.status_code
 
-    return jsonify({"error": "Unknown action"}), 400
+    return jsonify({"error": "Unknown error"}), 500
 
+# ---- Health check ----
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})

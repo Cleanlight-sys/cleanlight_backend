@@ -1,9 +1,8 @@
-print("App started — hardened with read-first + pagination + full read + clanker proxy", flush=True)
+print("App started — Cleanlight API (read-first + pagination + clanker proxy)", flush=True)
 
 import traceback
 from urllib.parse import urlencode
-from flask import Flask, request, jsonify
-from flask import Response, stream_with_context
+from flask import Flask, request, jsonify, Response, stream_with_context
 import requests
 import os
 import unicodedata
@@ -26,57 +25,16 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# --- Global read-first state ---
 READ_CONTEXT = {"loaded": False, "timestamp": 0}
-READ_TIMEOUT = 600  # seconds
+READ_TIMEOUT = 600
 
-# --- Whitelisted tables & fields ---
 ALLOWED_FIELDS = {
     "cleanlight_canvas": ["id", "cognition", "mir", "insight", "codex", "images"],
     "cleanlight_map": ["id", "cognition", "mir", "insight", "codex", "images", "pointer_net", "macro_group"]
 }
 ALLOWED_TABLES = set(ALLOWED_FIELDS.keys())
 
-# ------------------ LOGGING & MERGE ------------------
-@app.route('/echo_test', methods=['POST'])
-def echo_test():
-    """
-    Simple echo endpoint to test connectivity and payload handling.
-    Returns exactly what you sent, plus server timestamp.
-    """
-    try:
-        incoming = request.get_json(force=True, silent=False)
-    except Exception as e:
-        return jsonify({"error": f"Invalid JSON: {str(e)}"}), 400
-
-    return jsonify({
-        "status": "ok",
-        "received": incoming,
-        "server_time": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-    }), 200
-
-@app.before_request
-def log_and_merge():
-    app.logger.info(f"{request.method} {request.path} args={dict(request.args)} body={request.get_data(as_text=True)}")
-    if request.method in ['POST', 'PATCH']:
-        try:
-            body = request.get_json(force=True, silent=True) or {}
-            merged = {**request.args.to_dict(), **body}
-            request.merged_json = merged
-        except Exception:
-            request.merged_json = request.args.to_dict()
-
-def extract_table(req):
-    table = req.args.get('table')
-    if not table:
-        try:
-            body = req.get_json(silent=True) or {}
-            table = body.get('table')
-        except Exception:
-            table = None
-    return table
-
-# ------------------ BASE ALPHABETS ------------------
+# ------------------ ALPHABETS ------------------
 def get_base_alphabet(n):
     safe = []
     for codepoint in range(0x20, 0x2FFFF):
@@ -101,7 +59,7 @@ def get_base_alphabet(n):
 BASE1K = get_base_alphabet(1000)
 BASE10K = get_base_alphabet(10000)
 
-# ------------------ ENCODING/DECODING HELPERS ------------------
+# ------------------ ENCODING HELPERS ------------------
 def int_to_baseN(num, alphabet):
     if num == 0:
         return alphabet[0]
@@ -128,10 +86,8 @@ def encode_std1k(plaintext: str) -> str:
 
 def decode_std1k(std1k_str: str) -> str:
     as_int = baseN_to_int(std1k_str, BASE1K)
-    num_bytes = (as_int.bit_length() + 7) // 8
-    compressed = as_int.to_bytes(num_bytes, 'big')
-    dctx = zstd.ZstdDecompressor()
-    return dctx.decompress(compressed).decode('utf-8')
+    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
+    return zstd.ZstdDecompressor().decompress(compressed).decode('utf-8')
 
 def encode_std10k(image_bytes: bytes) -> str:
     cctx = zstd.ZstdCompressor()
@@ -141,13 +97,11 @@ def encode_std10k(image_bytes: bytes) -> str:
 
 def decode_std10k(std10k_str: str) -> bytes:
     as_int = baseN_to_int(std10k_str, BASE10K)
-    num_bytes = (as_int.bit_length() + 7) // 8
-    compressed = as_int.to_bytes(num_bytes, 'big')
-    dctx = zstd.ZstdDecompressor()
-    return dctx.decompress(compressed)
+    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
+    return zstd.ZstdDecompressor().decompress(compressed)
 
 # ------------------ FIELD PROCESSING ------------------
-def process_fields(data, encode=True, table=None, merge_jsonb=False):
+def process_fields(data, encode=True, table=None):
     processed = {}
     if table not in ALLOWED_TABLES:
         raise ValueError("Table not allowed")
@@ -155,28 +109,16 @@ def process_fields(data, encode=True, table=None, merge_jsonb=False):
     for key, val in data.items():
         if key not in ALLOWED_FIELDS[table]:
             raise ValueError(f"Field {key} not allowed in table {table}")
-        if key == "id":  # Pass ID through untouched
+
+        if key in ("id", "cognition") or val is None:
             processed[key] = val
-            continue
-        if key == "cognition":
-            processed[key] = val
-        elif key == "images" and val is not None:
+        elif key == "images":
             if encode:
-                if isinstance(val, str):
-                    image_bytes = base64.b64decode(val)
-                else:
-                    image_bytes = val
-                processed[key] = encode_std10k(image_bytes)
+                img_bytes = base64.b64decode(val) if isinstance(val, str) else val
+                processed[key] = encode_std10k(img_bytes)
             else:
                 processed[key] = val
-        elif key in ("mir", "codex", "insight", "pointer_net") and val is not None:
-            if merge_jsonb and isinstance(val, dict):
-                try:
-                    existing_json = json.loads(data.get(key, "{}")) if isinstance(data.get(key), str) else {}
-                except Exception:
-                    existing_json = {}
-                merged_json = {**existing_json, **val}
-                val = json.dumps(merged_json)
+        elif key in ("mir", "codex", "insight", "pointer_net"):
             if encode:
                 processed[key] = encode_std1k(val if isinstance(val, str) else json.dumps(val))
             else:
@@ -187,12 +129,11 @@ def process_fields(data, encode=True, table=None, merge_jsonb=False):
 
 def decode_row_for_api(row):
     for key in row:
-        if key == "cognition" or key == "id":
+        if key in ("id", "cognition") or not row[key]:
             continue
-        elif key == "images" and row[key]:
-            image_bytes = decode_std10k(row[key])
-            row[key] = base64.b64encode(image_bytes).decode('ascii')
-        elif key in ("mir", "codex", "insight", "pointer_net") and row[key]:
+        if key == "images":
+            row[key] = base64.b64encode(decode_std10k(row[key])).decode('ascii')
+        elif key in ("mir", "codex", "insight", "pointer_net"):
             row[key] = decode_std1k(row[key])
     return row
 
@@ -200,200 +141,133 @@ def enforce_read_first():
     if not READ_CONTEXT["loaded"] or (time.time() - READ_CONTEXT["timestamp"] > READ_TIMEOUT):
         raise PermissionError("Must read cleanlight_canvas and cleanlight_map before modifying data.")
 
-# ------------------ CRUD ENDPOINTS ------------------
 def safe_request(method, url, **kwargs):
     try:
         r = requests.request(method, url, timeout=60, **kwargs)
         r.raise_for_status()
         return r
     except requests.RequestException as e:
-        return jsonify({"error": f"Request to Supabase failed: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
 
+# ------------------ ROUTES ------------------
+@app.before_request
+def log_and_merge():
+    app.logger.info(f"{request.method} {request.path} args={dict(request.args)}")
+    if request.method in ['POST', 'PATCH']:
+        try:
+            body = request.get_json(force=True, silent=True) or {}
+            request.merged_json = {**request.args.to_dict(), **body}
+        except Exception:
+            request.merged_json = request.args.to_dict()
+
+@app.route('/flask/select_full_table', methods=['GET'])
 @app.route('/supa/select_full_table', methods=['GET'])
-def supa_select_full_table():
+def select_full_table():
     table = request.args.get('table')
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Table not allowed"}), 400
 
     limit = 500
     offset = 0
+    READ_CONTEXT["loaded"] = True
+    READ_CONTEXT["timestamp"] = time.time()
 
     @stream_with_context
     def generate():
-        nonlocal offset
-        first_chunk = True
-
-        # Set the read-first flag immediately
-        READ_CONTEXT["loaded"] = True
-        READ_CONTEXT["timestamp"] = time.time()
-
-        yield "["  # Start JSON array
-
+        yield "["
+        first = True
         while True:
             r = safe_request("GET", f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}&offset={offset}", headers=HEADERS)
             if isinstance(r, tuple):
-                # Error tuple from safe_request
                 yield "]"
                 return
             chunk = r.json()
             if not chunk:
                 break
             for row in chunk:
-                decoded = decode_row_for_api(row)
-                if not first_chunk:
+                if not first:
                     yield ","
-                yield json.dumps(decoded)
-                first_chunk = False
+                yield json.dumps(decode_row_for_api(row))
+                first = False
             if len(chunk) < limit:
                 break
             offset += limit
-
-        yield "]"  # End JSON array
+        yield "]"
 
     return Response(generate(), mimetype='application/json')
 
+@app.route('/flask/insert', methods=['POST'])
 @app.route('/supa/insert', methods=['POST'])
-def supa_insert():
-    table = extract_table(request)
-    if table not in ALLOWED_TABLES:
-        return jsonify({"error": "Table not allowed"}), 400
+def insert_row():
+    table = request.args.get('table') or request.merged_json.get('table')
     enforce_read_first()
+    row = request.merged_json.get("fields", request.merged_json)
+    row.pop("table", None)
+    encoded = process_fields(row, encode=True, table=table)
+    return safe_request("POST", f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=encoded).text, 200
 
-    raw = getattr(request, "merged_json", request.get_json(force=True) or {})
-    if isinstance(raw, dict):
-        raw.pop("table", None)
-    if "fields" in raw:
-        raw = raw["fields"]
-
-    encoded_row = process_fields(raw, encode=True, table=table)
-    return safe_request("POST", f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=encoded_row).text, 200
-
+@app.route('/flask/update', methods=['PATCH'])
 @app.route('/supa/update', methods=['PATCH'])
-def supa_update():
-    table = extract_table(request)
-    if table not in ALLOWED_TABLES:
-        return jsonify({"error": "Table not allowed"}), 400
+def update_row():
+    table = request.args.get('table') or request.merged_json.get('table')
     enforce_read_first()
+    col, val = request.args.get('col'), request.args.get('val')
+    data = request.merged_json.get("fields", request.merged_json)
+    data.pop("table", None)
+    encoded = process_fields(data, encode=True, table=table)
+    return safe_request("PATCH", f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}", headers=HEADERS, json=encoded).text, 200
 
-    col = request.args.get('col')
-    val = request.args.get('val')
-    if not (col and val):
-        return jsonify({"error": "Missing params"}), 400
-
-    raw = getattr(request, "merged_json", request.get_json(force=True) or {})
-    update_data = raw.get("fields", raw)
-    update_data.pop("table", None)
-
-    encoded_data = process_fields(update_data, encode=True, table=table)
-    return safe_request("PATCH", f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}", headers=HEADERS, json=encoded_data).text, 200
-
+@app.route('/flask/append', methods=['PATCH'])
 @app.route('/supa/append', methods=['PATCH'])
-def supa_append():
-    table = extract_table(request)
-    if table not in ALLOWED_TABLES:
-        return jsonify({"error": "Table not allowed"}), 400
+def append_row():
+    table = request.args.get('table') or request.merged_json.get('table')
     enforce_read_first()
-
-    col = request.args.get('col')
-    val = request.args.get('val')
-    if not (col and val):
-        return jsonify({"error": "Missing params"}), 400
-
-    # Get existing row
-    r = safe_request("GET", f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}", headers=HEADERS)
-    if isinstance(r, tuple):
-        return r
-    rows = r.json()
+    col, val = request.args.get('col'), request.args.get('val')
+    existing_r = safe_request("GET", f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}", headers=HEADERS)
+    if isinstance(existing_r, tuple):
+        return existing_r
+    rows = existing_r.json()
     if not rows:
         return jsonify({"error": "Row not found"}), 404
     existing = decode_row_for_api(rows[0])
-
-    # Merge fields
-    raw = getattr(request, "merged_json", request.get_json(force=True) or {})
-    append_data = raw.get("fields", raw)
+    append_data = request.merged_json.get("fields", request.merged_json)
     append_data.pop("table", None)
-
     for k, v in append_data.items():
         if isinstance(existing.get(k), dict) and isinstance(v, dict):
             existing[k].update(v)
-        elif isinstance(existing.get(k), str) and isinstance(v, dict):
-            try:
-                old_json = json.loads(existing[k])
-                if isinstance(old_json, dict):
-                    old_json.update(v)
-                    existing[k] = old_json
-            except Exception:
-                existing[k] = v
         else:
             existing[k] = v
-
     encoded = process_fields(existing, encode=True, table=table)
     return safe_request("PATCH", f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}", headers=HEADERS, json=encoded).text, 200
 
-# ------------------ CLANKER UNIVERSAL ENDPOINT ------------------
-@app.route("/clanker", methods=["POST"])
+# ------------------ CLANKER ------------------
+@app.route('/clanker', methods=['POST'])
 def clanker():
     try:
         data = request.get_json(force=True)
-        method = data.get("method", "").upper()
-        path = data.get("path", "")
-        params = data.get("params", {}) or {}
-        json_body = data.get("json", {}) or {}
-
+        method, path = data.get("method", "").upper(), data.get("path", "")
+        params, json_body = data.get("params", {}), data.get("json", {})
         if not method or not path:
             return jsonify({"error": "Missing method or path"}), 400
-
-        # Ensure leading slash
         if not path.startswith("/"):
             path = "/" + path
-
-        # -----------------------
-        # Namespace handling
-        # -----------------------
         if path.startswith("/flask/"):
-            # Hit internal Flask route
-            target_url = request.host_url.rstrip("/") + path.replace("/flask", "")
+            target_url = request.host_url.rstrip("/") + path
             headers = {}
         elif path.startswith("/supa/"):
-            # Direct to Supabase REST API
             supa_path = path.replace("/supa/", "")
             target_url = f"{SUPABASE_URL}/rest/v1/{supa_path}"
             headers = HEADERS
         else:
-            return jsonify({"error": "Invalid path namespace — must start with /flask/ or /supa/"}), 400
-
-        # Make the proxied request
-        r = requests.request(
-            method=method,
-            url=target_url,
-            headers=headers,
-            params=params,
-            json=json_body if method in ["POST", "PATCH", "DELETE"] else None,
-            timeout=60
-        )
-
+            return jsonify({"error": "Invalid path namespace"}), 400
+        r = requests.request(method, target_url, headers=headers, params=params, json=json_body if method in ["POST", "PATCH", "DELETE"] else None, timeout=60)
         try:
             resp_data = r.json()
         except Exception:
             resp_data = r.text
-
-        return jsonify({
-            "status_code": r.status_code,
-            "response": resp_data
-        }), 200
-
+        return jsonify({"status_code": r.status_code, "response": resp_data}), 200
     except Exception as e:
         return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
-
-
-
-
-
-
-
-
-
-

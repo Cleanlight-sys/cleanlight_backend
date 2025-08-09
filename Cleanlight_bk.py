@@ -131,23 +131,82 @@ def command():
 
     # Execute action
     if action == "read_table":
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS)
-        data = r.json()
-        if not isinstance(data, list):
-            return jsonify({"error": "Unexpected response", "data": data}), 500
-        return jsonify([decode_row(row) for row in data])
+        # Pagination: get 50 rows at a time until none left
+        limit = 50
+        offset = 0
+        all_rows = []
+        while True:
+            r = requests.get(
+                f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}&offset={offset}",
+                headers=HEADERS
+            )
+            data = r.json()
+            if not isinstance(data, list):
+                return jsonify({"error": "Unexpected response", "data": data}), 500
+            if not data:
+                break
+            all_rows.extend([decode_row(row) for row in data])
+            if len(data) < limit:
+                break
+            offset += limit
+        return jsonify(all_rows)
 
     if action == "read_row":
         if not where:
             return jsonify({"error": "Missing 'where'"}), 400
-        r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS)
+        r = requests.get(
+            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}",
+            headers=HEADERS
+        )
         data = r.json()
         if not isinstance(data, list):
             return jsonify({"error": "Unexpected response", "data": data}), 500
         return jsonify([decode_row(row) for row in data])
 
+    if action == "insert":
+        if not fields:
+            return jsonify({"error": "Missing 'fields'"}), 400
+        encoded = process_fields(fields, table)
+        r = requests.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=encoded)
+        return jsonify(r.json()), r.status_code
+
+    if action == "update":
+        if not where or not fields:
+            return jsonify({"error": "Missing 'where' or 'fields'"}), 400
+        encoded = process_fields(fields, table)
+        r = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}",
+            headers=HEADERS, json=encoded
+        )
+        return jsonify(r.json()), r.status_code
+
+    if action == "append":
+        if not where or not fields:
+            return jsonify({"error": "Missing 'where' or 'fields'"}), 400
+        existing = requests.get(
+            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}",
+            headers=HEADERS
+        ).json()
+        if not existing:
+            return jsonify({"error": "Row not found"}), 404
+        decoded = decode_row(existing[0])
+        for k, v in fields.items():
+            if isinstance(decoded.get(k), dict) and isinstance(v, dict):
+                decoded[k].update(v)
+            else:
+                decoded[k] = v
+        encoded = process_fields(decoded, table)
+        r = requests.patch(
+            f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}",
+            headers=HEADERS, json=encoded
+        )
+        return jsonify(r.json()), r.status_code
+
+    return jsonify({"error": "Unknown error"}), 500
+    
 # ---- Health check ----
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
+
 

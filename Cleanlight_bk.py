@@ -173,7 +173,18 @@ def insert():
 
     encoded = process_fields(body, encode=True, table=table)
     r = requests.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=encoded)
-    return jsonify(r.json()), r.status_code
+
+    try:
+        # Try to parse JSON normally
+        return jsonify(r.json()), r.status_code
+    except ValueError:
+        # If Supabase sent empty or non-JSON, show raw text for debugging
+        return jsonify({
+            "status": r.status_code,
+            "raw_text": r.text,
+            "sent_payload": encoded
+        }), r.status_code
+
 
 @app.route('/flask/update', methods=['PATCH'])
 def update():
@@ -219,3 +230,4 @@ def append():
     encoded = process_fields(decoded, encode=True, table=table)
     r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{val}", headers=HEADERS, json=encoded)
     return jsonify(r.json()), r.status_code
+

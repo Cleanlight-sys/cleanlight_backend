@@ -21,6 +21,29 @@ ALLOWED_FIELDS = {
 ALLOWED_TABLES = set(ALLOWED_FIELDS.keys())
 
 # ---- Encoding helpers ----
+def is_base1k_string(s):
+    """Quick check: True if all characters are in BASE1K alphabet."""
+    if not isinstance(s, str):
+        return False
+    return all(ch in BASE1K for ch in s)
+
+def decode_row(row):
+    for k in list(row.keys()):
+        if k == "images" and row[k]:
+            try:
+                row[k] = base64.b64encode(decode_std10k(row[k])).decode('ascii')
+            except Exception:
+                pass  # leave as-is if bad data
+        elif k in ("mir", "codex", "insight") and row[k]:
+            if is_base1k_string(row[k]):
+                try:
+                    row[k] = decode_std1k(row[k])
+                except Exception:
+                    pass
+            # else: already human readable, leave as-is
+        # cognition is already plain text — leave untouched
+    return row
+
 def get_base_alphabet(n):
     safe = []
     for codepoint in range(0x20, 0x2FFFF):
@@ -164,3 +187,4 @@ def command():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
+

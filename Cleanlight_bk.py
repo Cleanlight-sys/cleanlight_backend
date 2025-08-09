@@ -215,7 +215,33 @@ def append_logic(params, fields):
     return supa_request("PATCH", table, params={col: f"eq.{val}"}, json_data=data)
 
 # ------------------ Universal Handler ------------------
+@app.route("/", methods=["GET"])
+def index():
+    """
+    Root wake-up endpoint for Render.
+    Shows service name and confirms it's running.
+    """
+    return jsonify({
+        "status": "ok",
+        "service": "cleanlight_backend",
+        "message": "Service is live and awaiting API calls."
+    }), 200
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    """
+    Lightweight healthcheck endpoint.
+    Used for pinging/waking the Render instance before real work.
+    """
+    return jsonify({
+        "status": "healthy",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+        "read_context_loaded": READ_CONTEXT["loaded"],
+        "tables_allowed": list(ALLOWED_TABLES)
+    }), 200
 @app.route("/clanker", methods=["POST"])
+
 def clanker():
     try:
         payload = request.get_json(force=True)
@@ -263,3 +289,4 @@ def echo_test():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+

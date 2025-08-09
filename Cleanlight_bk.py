@@ -297,18 +297,49 @@ def supa_append():
 # ------------------ CLANKER UNIVERSAL ENDPOINT ------------------
 @app.route('/clanker', methods=['POST'])
 def clanker():
-    req = request.get_json(force=True)
-    method = req.get('method', 'GET').upper()
-    path = req.get('path', '/')
-    params = req.get('params', {})
-    json_body = req.get('json', None)
+    """
+    Universal pass-through for AI calls.
+    Expects JSON body with:
+      - method: HTTP verb (GET, POST, PATCH, DELETE)
+      - path: Target API path (e.g. "/supa/update")
+      - params: Dict of query parameters
+      - json: Dict of JSON body to send
+    """
+    try:
+        data = request.get_json(force=True)
+        method = data.get('method')
+        path = data.get('path')
+        params = data.get('params', {})
+        json_body = data.get('json', {})
 
-    target_url = f"{request.host_url.rstrip('/')}{path}"
-    r = requests.request(method, target_url, params=params, json=json_body, headers={"Content-Type": "application/json"})
-    return jsonify({
-        "status_code": r.status_code,
-        "response": r.json() if r.headers.get('Content-Type', '').startswith('application/json') else r.text
-    })
+        if not method or not path:
+            return jsonify({"error": "Missing 'method' or 'path'"}), 400
+
+        # Build full target URL
+        target_url = f"{request.host_url.rstrip('/')}{path}"
+
+        # Route the request to the target endpoint internally
+        resp = requests.request(
+            method=method.upper(),
+            url=target_url,
+            params=params,
+            json=json_body,
+            headers={"Content-Type": "application/json", "Accept": "application/json"}
+        )
+
+        try:
+            resp_data = resp.json()
+        except Exception:
+            resp_data = resp.text
+
+        return jsonify({
+            "status_code": resp.status_code,
+            "response": resp_data
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/')
 def index():
@@ -316,3 +347,4 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+

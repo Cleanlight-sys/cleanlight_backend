@@ -330,13 +330,22 @@ def clanker():
         if not path.startswith("/"):
             path = "/" + path
 
-        # Build target URL
-        target_url = request.host_url.rstrip("/") + path
+        # Decide target URL
+        if path.startswith("/supa/"):
+            # Strip the /supa/ prefix to match Supabase table API
+            supa_path = path.replace("/supa/", "")
+            target_url = f"{SUPABASE_URL}/rest/v1/{supa_path}"
+            headers = HEADERS
+        else:
+            # Call internal Flask endpoint
+            target_url = request.host_url.rstrip("/") + path
+            headers = {}
 
-        # Make internal request
+        # Make the request
         r = requests.request(
             method=method,
             url=target_url,
+            headers=headers,
             params=params,
             json=json_body if method in ["POST", "PATCH"] else None,
             timeout=60
@@ -353,8 +362,7 @@ def clanker():
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
+        return jsonify({"error": str(e), "trace": traceback.format_exc()}), 500
         
 @app.route('/')
 def index():
@@ -362,6 +370,7 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 

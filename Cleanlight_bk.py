@@ -117,14 +117,6 @@ def process_fields(data, table):
             processed[key] = val
     return processed
 
-def decode_row(row):
-    for k in list(row.keys()):
-        if k == "images" and row[k]:
-            row[k] = base64.b64encode(decode_std10k(row[k])).decode('ascii')
-        elif k in ("mir", "codex", "insight") and row[k]:
-            row[k] = decode_std1k(row[k])
-    return row
-
 # ---- CRUD endpoint ----
 @app.route("/flask/command", methods=["POST"])
 def command():
@@ -187,4 +179,5 @@ def command():
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
+
 

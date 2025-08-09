@@ -20,11 +20,12 @@ ALLOWED_FIELDS = {
 }
 ALLOWED_TABLES = set(ALLOWED_FIELDS.keys())
 
-# ---- Encoding/Decoding Helpers ----
+# ---- Encoding helpers ----
 def get_base_alphabet(n):
     safe = []
     for codepoint in range(0x20, 0x2FFFF):
         ch = chr(codepoint)
+        name = ch.encode("unicode_escape").decode()
         if (
             0xD800 <= codepoint <= 0xDFFF or
             0xFDD0 <= codepoint <= 0xFDEF or
@@ -77,7 +78,20 @@ def decode_std10k(std10k_str: str) -> bytes:
     compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, 'big')
     return zstd.ZstdDecompressor().decompress(compressed)
 
-# ---- Field Processing ----
+def decode_row(row):
+    for k in list(row.keys()):
+        if k == "images" and row[k]:
+            try:
+                row[k] = base64.b64encode(decode_std10k(row[k])).decode('ascii')
+            except Exception:
+                pass
+        elif k in ("mir", "codex", "insight") and row[k]:
+            try:
+                row[k] = decode_std1k(row[k])
+            except Exception:
+                pass
+    return row
+
 def process_fields(data, table):
     processed = {}
     for key, val in data.items():
@@ -93,22 +107,7 @@ def process_fields(data, table):
             processed[key] = val
     return processed
 
-def decode_row(row):
-    """Always decode codex, mir, insight, images before returning."""
-    for k in list(row.keys()):
-        if k == "images" and row[k]:
-            try:
-                row[k] = base64.b64encode(decode_std10k(row[k])).decode('ascii')
-            except Exception:
-                pass
-        elif k in ("mir", "codex", "insight") and row[k]:
-            try:
-                row[k] = decode_std1k(row[k])
-            except Exception:
-                pass
-    return row
-
-# ---- CRUD Endpoint ----
+# ---- CRUD endpoint ----
 @app.route("/flask/command", methods=["POST"])
 def command():
     payload = request.get_json(force=True) or {}
@@ -119,20 +118,28 @@ def command():
     limit = payload.get("limit", 50)
     offset = payload.get("offset", 0)
 
+    # Basic validation
     if action not in ["read_table", "read_row", "insert", "update", "append"]:
         return jsonify({"error": "Invalid action"}), 400
     if table not in ALLOWED_TABLES:
         return jsonify({"error": "Invalid table"}), 400
 
+    # Execute action
     if action == "read_table":
         r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?limit={limit}&offset={offset}", headers=HEADERS)
-        return jsonify([decode_row(row) for row in r.json()])
+        rows = r.json()
+        if not isinstance(rows, list):
+            return jsonify({"error": "Unexpected response"}), 500
+        return jsonify([decode_row(row) for row in rows])
 
     if action == "read_row":
         if not where:
             return jsonify({"error": "Missing 'where'"}), 400
         r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{where['col']}=eq.{where['val']}", headers=HEADERS)
-        return jsonify([decode_row(row) for row in r.json()])
+        rows = r.json()
+        if not isinstance(rows, list):
+            return jsonify({"error": "Unexpected response"}), 500
+        return jsonify([decode_row(row) for row in rows])
 
     if action == "insert":
         if not fields:
@@ -166,7 +173,7 @@ def command():
 
     return jsonify({"error": "Unknown error"}), 500
 
-# ---- Health Check ----
+# ---- Health check ----
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})

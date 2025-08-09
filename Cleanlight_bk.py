@@ -318,30 +318,43 @@ def supa_append():
 def clanker():
     try:
         data = request.get_json(force=True)
-        method = data.get("method")
-        path = data.get("path")
-        params = data.get("params", {})
-        json_body = data.get("json", {})
+        method = data.get("method", "").upper()
+        path = data.get("path", "")
+        params = data.get("params", {}) or {}
+        json_body = data.get("json", {}) or {}
 
         if not method or not path:
-            return jsonify({"error": "method and path are required"}), 400
+            return jsonify({"error": "Missing method or path"}), 400
 
-        # Merge query params into path if provided
-        if params:
-            query_string = urlencode(params)
-            path = f"{path}?{query_string}"
+        # Ensure path starts with /
+        if not path.startswith("/"):
+            path = "/" + path
 
-        # Forward the request internally
-        url = request.host_url.rstrip("/") + path
-        resp = requests.request(method, url, json=json_body, headers=request.headers)
+        # Build target URL
+        target_url = request.host_url.rstrip("/") + path
+
+        # Make internal request
+        r = requests.request(
+            method=method,
+            url=target_url,
+            params=params,
+            json=json_body if method in ["POST", "PATCH"] else None,
+            timeout=60
+        )
+
+        try:
+            resp_data = r.json()
+        except Exception:
+            resp_data = r.text
 
         return jsonify({
-            "status": resp.status_code,
-            "data": resp.json() if resp.headers.get("Content-Type", "").startswith("application/json") else resp.text
-        }), resp.status_code
+            "status_code": r.status_code,
+            "response": resp_data
+        }), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
         
 @app.route('/')
 def index():
@@ -349,6 +362,7 @@ def index():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
+
 
 
 

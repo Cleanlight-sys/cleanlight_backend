@@ -1,4 +1,4 @@
-# Cleanlight_bk.py — Unified /command backend (force-decoding on row reads)
+# Cleanlight_bk.py — Unified /command backend (decode-on-read, always)
 # Run: gunicorn Cleanlight_bk:app
 
 from flask import Flask, request, jsonify
@@ -21,7 +21,7 @@ HEADERS = {
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json",
     "Accept": "application/json",
-    "Prefer": "return=representation",  # return mutated rows
+    "Prefer": "return=representation",
 }
 
 # Writable fields only (reads are unrestricted)
@@ -110,7 +110,53 @@ def decode_std10k(std10k_str: str) -> bytes:
             continue
     return std10k_str.encode("utf-8", errors="ignore")
 
-# -------------------- Row/field processing --------------------
+# -------------------- Heuristic decode helpers --------------------
+def _looks_like_baseN(s: str) -> bool:
+    """Heuristic: treat as std1k only if every char is in either alphabet and length >= 16."""
+    if not isinstance(s, str) or len(s) < 16:
+        return False
+    # Fast check: all chars must live in current OR legacy alphabet
+    ok_cur = all((ch in BASE1K) for ch in s)
+    ok_old = all((ch in LEGACY_BASE1K) for ch in s)
+    return ok_cur or ok_old
+
+def maybe_decode_string(field: str, val: str):
+    """Decode std1k/std10k when appropriate; otherwise return original."""
+    if val is None or not isinstance(val, str):
+        return val
+    if field == "images":
+        try:
+            # If it is already base64, keep it; else it's likely std10k
+            # Try std10k → base64
+            dec = decode_std10k(val)
+            return base64.b64encode(dec).decode("ascii")
+        except Exception:
+            return val
+    # std1k fields or any string that looks like std1k
+    if field in ("mir","codex","insight") or _looks_like_baseN(val):
+        txt = decode_std1k(val)
+        return txt
+    return val
+
+def deep_decode_obj(obj):
+    """Recursively decode strings that look encoded; special handling for known fields."""
+    if isinstance(obj, dict):
+        out = {}
+        for k, v in obj.items():
+            if isinstance(v, str):
+                out[k] = maybe_decode_string(k, v)
+            elif isinstance(v, (dict, list)):
+                out[k] = deep_decode_obj(v)
+            else:
+                out[k] = v
+        return out
+    if isinstance(obj, list):
+        return [deep_decode_obj(x) for x in obj]
+    if isinstance(obj, str):
+        return maybe_decode_string("", obj)
+    return obj
+
+# -------------------- Write processing --------------------
 def process_single_field(table: str, field: str, value):
     if field not in WRITEABLE_FIELDS[table]:
         raise ValueError(f"Field {field} not allowed for table {table}")
@@ -128,35 +174,6 @@ def process_fields(table: str, data: dict) -> dict:
         out[k] = process_single_field(table, k, v)
     return out
 
-def decode_row(row: dict) -> dict:
-    """Decode std1k/std10k fields if present."""
-    row = dict(row)
-    if "images" in row and row["images"]:
-        try:
-            row["images"] = base64.b64encode(decode_std10k(row["images"])).decode("ascii")
-        except Exception:
-            pass
-    for k in ("mir", "codex", "insight"):
-        if k in row and row[k]:
-            try:
-                row[k] = decode_std1k(row[k])
-            except Exception:
-                pass
-    return row
-
-def decode_cell_value(field: str, raw_value):
-    if field == "images" and raw_value:
-        try:
-            return base64.b64encode(decode_std10k(raw_value)).decode("ascii")
-        except Exception:
-            return raw_value
-    if field in ("mir", "codex", "insight") and raw_value:
-        try:
-            return decode_std1k(raw_value)
-        except Exception:
-            return raw_value
-    return raw_value
-
 # -------------------- Supabase helpers --------------------
 def _json_or_text(resp: requests.Response):
     try:
@@ -173,7 +190,7 @@ def sb_list(table: str, limit=50, offset=0, select: str | None = None, *, raw=Fa
     r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, params=params)
     data = _json_or_text(r)
     if isinstance(data, list):
-        return (data if raw else [decode_row(x) for x in data]), r.status_code
+        return (data if raw else [deep_decode_obj(x) for x in data]), r.status_code
     return data, r.status_code
 
 def sb_get_by_key(table: str, key_col: str, key_val, select: str = "*", *, raw=False):
@@ -183,7 +200,7 @@ def sb_get_by_key(table: str, key_col: str, key_val, select: str = "*", *, raw=F
     if isinstance(data, list):
         if not data:
             return None, 404
-        return (data[0] if raw else decode_row(data[0])), 200
+        return (data[0] if raw else deep_decode_obj(data[0])), 200
     return data, r.status_code
 
 def sb_insert(table: str, fields: dict):
@@ -191,9 +208,9 @@ def sb_insert(table: str, fields: dict):
     r = requests.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=encoded)
     data = _json_or_text(r)
     if isinstance(data, list) and data:
-        return decode_row(data[0]), r.status_code
+        return deep_decode_obj(data[0]), r.status_code
     if isinstance(data, dict):
-        return decode_row(data), r.status_code
+        return deep_decode_obj(data), r.status_code
     return data, r.status_code
 
 def sb_update_where(table: str, col: str, val, fields: dict):
@@ -202,9 +219,9 @@ def sb_update_where(table: str, col: str, val, fields: dict):
     r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{qv}", headers=HEADERS, json=encoded)
     data = _json_or_text(r)
     if isinstance(data, list) and data:
-        return decode_row(data[0]), r.status_code
+        return deep_decode_obj(data[0]), r.status_code
     if isinstance(data, dict):
-        return decode_row(data), r.status_code
+        return deep_decode_obj(data), r.status_code
     return data, r.status_code
 
 def sb_delete_where(table: str, col: str, val):
@@ -256,13 +273,13 @@ def _norm_table(payload):
 
 def _norm_rid(payload):
     rid = _pick(payload, "rid","id","TargetRID")
-    if rid is not None: return int(rid)
+    if rid is not None:
+        try: return int(rid)
+        except Exception: return None
     where = payload.get("where")
     if isinstance(where, dict) and "val" in where:
-        try:
-            return int(where.get("val"))
-        except Exception:
-            return None
+        try: return int(where.get("val"))
+        except Exception: return None
     return None
 
 def _norm_field(payload): return _pick(payload, "field","TargetField")
@@ -314,7 +331,7 @@ def unified_command():
     offset      = int(body.get("offset", 0))
 
     try:
-        # ---------- READS ----------
+        # ---------- READS (force-decode everywhere) ----------
         if action == "read_table":
             rows, code = sb_list(table, min(limit, 1000), offset, select=select, raw=False)
             return jsonify(rows), code
@@ -350,37 +367,36 @@ def unified_command():
                 ids = ids[:MAX_IDS_PER_CALL]
             rows = []
             for v in ids:
-                # Always fetch RAW by key_col, then decode locally (force-decoding)
-                rec, code = sb_get_by_key(table, key_col, v, select=select, raw=True)
+                rec, code = sb_get_by_key(table, key_col, v, select=select, raw=True)  # fetch raw
                 if code == 404 or rec is None: continue
-                rows.append(decode_row(rec))
+                rows.append(deep_decode_obj(rec))  # decode
             return jsonify(rows), 200
 
         if action == "read_row":
-            # Always fetch RAW by key_col or provided where, then decode locally
             if rid is not None:
-                rec, code = sb_get_by_key(table, key_col, rid, select=select, raw=True)
+                rec, code = sb_get_by_key(table, key_col, rid, select=select, raw=True)  # raw
             elif where_col and where_val is not None:
                 rec, code = sb_get_by_key(table, where_col, where_val, select=select, raw=True)
             else:
                 return jsonify({"error":"Missing rid or where {col,val}"}), 400
             if code == 404 or rec is None:
                 return jsonify({"error":"Not found"}), 404
-            return jsonify(decode_row(rec)), 200
+            return jsonify(deep_decode_obj(rec)), 200  # decode
 
         if action == "read_cell":
             if not field:
                 return jsonify({"error":"Missing field"}), 400
-            # Fetch raw, decode the value if it's one of the encoded fields; else pass-through
+            # always raw fetch for a precise slice
+            sel = f"{key_col},{field}"
             if rid is not None:
-                rec, code = sb_get_by_key(table, key_col, rid, select=f"{key_col},{field}", raw=True)
+                rec, code = sb_get_by_key(table, key_col, rid, select=sel, raw=True)
             elif where_col and where_val is not None:
-                rec, code = sb_get_by_key(table, where_col, where_val, select=f"{where_col},{field}", raw=True)
+                rec, code = sb_get_by_key(table, where_col, where_val, select=sel, raw=True)
             else:
                 return jsonify({"error":"Missing rid or where {col,val}"}), 400
             if code == 404 or rec is None:
                 return jsonify({"error":"Not found"}), 404
-            val = decode_cell_value(field, rec.get(field))
+            val = maybe_decode_string(field, rec.get(field))
             return jsonify({key_col: rec.get(key_col), "field": field, "value": val}), 200
 
         if action == "read_column":
@@ -389,7 +405,7 @@ def unified_command():
             raw_list, code = sb_list(table, min(limit, 1000), offset, select=f"{key_col},{field}", raw=True)
             if not isinstance(raw_list, list):
                 return jsonify(raw_list), code
-            out = [{key_col: r.get(key_col), "value": decode_cell_value(field, r.get(field))} for r in raw_list]
+            out = [{key_col: r.get(key_col), "value": maybe_decode_string(field, r.get(field))} for r in raw_list]
             return jsonify(out), 200
 
         # ---------- WRITES ----------
@@ -419,7 +435,6 @@ def unified_command():
         if action == "append":
             if not isinstance(value, dict):
                 return jsonify({"error":"payload/fields must be an object"}), 400
-            # read existing (by rid or where), merge, write back
             if rid is not None:
                 base_rec, code = sb_get_by_key(table, key_col, rid, select="*", raw=True)
             elif where_col and where_val is not None:
@@ -435,9 +450,7 @@ def unified_command():
                 elif isinstance(cur, list) and isinstance(v, list): cur = cur + v
                 else: cur = v
                 merged[k] = cur
-            # never try to overwrite PK
-            merged.pop("id", None)
-            merged.pop("map_id", None)
+            merged.pop("id", None); merged.pop("map_id", None)
             _satisfy_read_before_write(table, key_col=key_col, where_col=where_col, where_val=where_val, rid=rid)
             if rid is not None:
                 data, code = sb_update_where(table, key_col, rid, merged)
@@ -469,9 +482,9 @@ def unified_command():
                     r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where_col}=eq.{quote_plus(str(where_val))}", headers=HEADERS, json={field: stored})
                 res = _json_or_text(r)
                 if isinstance(res, list) and res:
-                    return jsonify(decode_row(res[0])), r.status_code
+                    return jsonify(deep_decode_obj(res[0])), r.status_code
                 if isinstance(res, dict):
-                    return jsonify(decode_row(res)), r.status_code
+                    return jsonify(deep_decode_obj(res)), r.status_code
                 return jsonify(res), r.status_code
             else:
                 stored = process_single_field(table, field, value)
@@ -483,9 +496,9 @@ def unified_command():
                     return jsonify({"error":"Missing rid or where {col,val}"}), 400
                 res = _json_or_text(r)
                 if isinstance(res, list) and res:
-                    return jsonify(decode_row(res[0])), r.status_code
+                    return jsonify(deep_decode_obj(res[0])), r.status_code
                 if isinstance(res, dict):
-                    return jsonify(decode_row(res)), r.status_code
+                    return jsonify(deep_decode_obj(res)), r.status_code
                 return jsonify(res), r.status_code
 
         if action == "delete":

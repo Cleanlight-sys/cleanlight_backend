@@ -21,7 +21,7 @@ HEADERS = {
 
 ALLOWED_FIELDS = {
     "cleanlight_canvas": ["id", "cognition", "mir", "insight", "codex", "images", "checksums", "timestamps"],
-    "cleanlight_map":    ["id", "cognition", "mir", "insight", "codex", "images", "pointer_net", "macro_group"],
+    "cleanlight_map":    ["map_id", "pointer_net","checksum"],
 }
 
 # ---- Encoding helpers ----
@@ -368,3 +368,4 @@ def get_map_column(field):
         val = decode_cell_value("cleanlight_map", field, r.get(field))
         out.append({"id": r.get("id"), "value": val})
     return jsonify(out), 200
+

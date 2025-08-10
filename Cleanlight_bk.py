@@ -1,10 +1,11 @@
-# Cleanlight_bk.py — unified backend (Flask + Supabase/PostgREST)
+# Cleanlight_bk.py — unified backend (rid OR where, auto-paging, std1k/std10k)
 # Start with: gunicorn Cleanlight_bk:app
 
 from flask import Flask, request, jsonify
 import os, json, base64, requests
 import zstandard as zstd
 from datetime import datetime
+from urllib.parse import quote_plus
 
 # -------------------- 1) App --------------------
 app = Flask(__name__)
@@ -20,7 +21,6 @@ HEADERS = {
     "Authorization": f"Bearer {SUPABASE_KEY}",
     "Content-Type": "application/json",
     "Accept": "application/json",
-    # ensure PostgREST returns mutated row as JSON on writes
     "Prefer": "return=representation",
 }
 
@@ -30,7 +30,8 @@ ALLOWED_FIELDS = {
         "id", "cognition", "mir", "insight", "codex", "images", "checksums", "timestamps"
     ],
     "cleanlight_map": [
-        "map_id","pointer_net", "checksum"
+        # if your PK is map_id, you may add it here; ALLOWED_FIELDS is for updatable cols, not filters
+        "id", "cognition", "mir", "insight", "codex", "images", "pointer_net", "macro_group"
     ],
 }
 
@@ -94,10 +95,8 @@ def process_single_field(table: str, field: str, value):
     if field not in ALLOWED_FIELDS[table]:
         raise ValueError(f"Field {field} not allowed for table {table}")
     if field == "images" and value is not None:
-        # input is base64; store std10k
-        return encode_std10k(base64.b64decode(value))
+        return encode_std10k(base64.b64decode(value))  # base64 in → std10k stored
     if field in ("mir", "codex", "insight") and value is not None:
-        # input is raw English; store std1k
         return encode_std1k(value if isinstance(value, str) else json.dumps(value))
     return value
 
@@ -137,7 +136,7 @@ def decode_cell_value(table: str, field: str, raw_value):
             return raw_value
     return raw_value
 
-# -------------------- 5) Supabase helpers --------------------
+# -------------------- 5) Supabase helpers (id OR where) --------------------
 def _json_or_text(resp: requests.Response):
     try:
         if resp.content and resp.headers.get("Content-Type", "").startswith("application/json"):
@@ -165,6 +164,16 @@ def sb_get_by_id(table: str, row_id: int, select: str = "*"):
         return (decode_row(data[0]) if select == "*" else data[0]), 200
     return data, r.status_code
 
+def sb_get_where(table: str, col: str, val, select: str = "*"):
+    qv = quote_plus(str(val))
+    r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{qv}&select={select}", headers=HEADERS)
+    data = _json_or_text(r)
+    if isinstance(data, list):
+        if not data:
+            return None, 404
+        return (decode_row(data[0]) if select == "*" else data[0]), 200
+    return data, r.status_code
+
 def sb_insert(table: str, fields: dict):
     encoded = process_fields(table, fields)
     r = requests.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=encoded)
@@ -185,21 +194,36 @@ def sb_update_by_id(table: str, row_id: int, fields: dict):
         return decode_row(data), r.status_code
     return data, r.status_code
 
-def sb_merge_cell(table: str, row_id: int, field: str, value):
-    # fetch existing
-    existing, code = sb_get_by_id(table, row_id)
-    if code == 404 or existing is None:
+def sb_update_where(table: str, col: str, val, fields: dict):
+    encoded = process_fields(table, fields)
+    qv = quote_plus(str(val))
+    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{qv}", headers=HEADERS, json=encoded)
+    data = _json_or_text(r)
+    if isinstance(data, list) and data:
+        return decode_row(data[0]), r.status_code
+    if isinstance(data, dict):
+        return decode_row(data), r.status_code
+    return data, r.status_code
+
+def sb_delete_where(table: str, col: str, val):
+    qv = quote_plus(str(val))
+    r = requests.delete(f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{qv}", headers=HEADERS)
+    return _json_or_text(r), r.status_code
+
+def sb_merge_cell_by_where(table: str, col: str, val, field: str, value):
+    rec, code = sb_get_where(table, col, val, select="*")
+    if code == 404 or rec is None:
         return {"error": "Not found"}, 404
-    cur = existing.get(field)
-    # merge semantics
+    cur = rec.get(field)
     if isinstance(cur, dict) and isinstance(value, dict):
         new_val = {**cur, **value}
     elif isinstance(cur, list) and isinstance(value, list):
         new_val = cur + value
     else:
-        new_val = value  # scalars/mismatch → overwrite
+        new_val = value
     stored = process_single_field(table, field, new_val)
-    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?id=eq.{row_id}", headers=HEADERS, json={field: stored})
+    qv = quote_plus(str(val))
+    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{qv}", headers=HEADERS, json={field: stored})
     res = _json_or_text(r)
     if isinstance(res, list) and res:
         return decode_row(res[0]), r.status_code
@@ -222,7 +246,7 @@ def _read_table_autopage(table: str, limit_total=10000, page_size=1000, start_of
             break
     return rows[:cap]
 
-# -------------------- 6) Normalizers (accept many agent shapes) --------------------
+# -------------------- 6) Normalizers --------------------
 def _norm_action(a):
     if not a:
         return None
@@ -258,6 +282,7 @@ def _norm_rid(payload):
     if rid is not None:
         return int(rid)
     where = payload.get("where")
+    # prefer explicit rid only when where.col is literally 'id'
     if isinstance(where, dict) and str(where.get("col")).lower() == "id":
         return int(where.get("val"))
     return None
@@ -283,20 +308,23 @@ def health():
 def unified_command():
     body = request.get_json(force=True) or {}
 
-    # Legacy compatibility shim: {action, table, where, fields}
+    # Legacy shim: {action, table, where, fields}
     if "action" in body and "table" in body and ("fields" in body or body.get("action") in ("read_table", "read_row")):
         body = dict(body)
         body.setdefault("target", body.get("table"))
-        if body.get("action") == "read_row" and "rid" not in body:
-            w = body.get("where") or {}
-            if str(w.get("col")) == "id":
-                body["rid"] = w.get("val")
+        # If where.id present, surface as rid; otherwise keep where for generic ops
+        w = body.get("where") or {}
+        if body.get("action") == "read_row" and "rid" not in body and str(w.get("col")).lower() == "id":
+            body["rid"] = w.get("val")
 
     action = _norm_action(body.get("action"))
     table = _norm_table(body)
     rid = _norm_rid(body)
     field = _norm_field(body)
     value = _norm_value(body)
+    where = body.get("where") if isinstance(body.get("where"), dict) else None
+    where_col = str(where.get("col")) if where and "col" in where else None
+    where_val = where.get("val") if where and "val" in where else None
 
     if action is None or table is None:
         return jsonify({"error": "Missing action or target table"}), 400
@@ -322,23 +350,31 @@ def unified_command():
             return jsonify(rows), 200
 
         if action == "read_row":
-            if rid is None:
-                return jsonify({"error": "Missing rid"}), 400
-            data, code = sb_get_by_id(table, rid)
+            if rid is not None:
+                data, code = sb_get_by_id(table, rid)
+            elif where_col and where_val is not None:
+                data, code = sb_get_where(table, where_col, where_val, select="*")
+            else:
+                return jsonify({"error": "Missing rid or where {col,val}"}), 400
             if code == 404:
                 return jsonify({"error": "Not found"}), 404
             return jsonify(data), code
 
         if action == "read_cell":
-            if rid is None or not field:
-                return jsonify({"error": "Missing rid or field"}), 400
+            if not field:
+                return jsonify({"error": "Missing field"}), 400
             if field not in ALLOWED_FIELDS[table]:
                 return jsonify({"error": "Invalid field"}), 400
-            rec, code = sb_get_by_id(table, rid, select=f"id,{field}")
+            if rid is not None:
+                rec, code = sb_get_by_id(table, rid, select=f"id,{field}")
+            elif where_col and where_val is not None:
+                rec, code = sb_get_where(table, where_col, where_val, select=f"id,{field}")
+            else:
+                return jsonify({"error": "Missing rid or where {col,val}"}), 400
             if code == 404 or rec is None:
                 return jsonify({"error": "Not found"}), 404
             v = decode_cell_value(table, field, rec.get(field))
-            return jsonify({"id": rid, "field": field, "value": v}), 200
+            return jsonify({"id": rec.get("id"), "field": field, "value": v}), 200
 
         if action == "read_column":
             if not field:
@@ -361,60 +397,117 @@ def unified_command():
             return jsonify(data), code
 
         if action == "update":
-            if rid is None:
-                return jsonify({"error": "Missing rid"}), 400
             if not isinstance(value, dict):
                 return jsonify({"error": "payload/fields must be an object"}), 400
-            data, code = sb_update_by_id(table, rid, value)
-            if code == 404:
-                return jsonify({"error": "Not found"}), 404
+            if rid is not None:
+                data, code = sb_update_by_id(table, rid, value)
+            elif where_col and where_val is not None:
+                data, code = sb_update_where(table, where_col, where_val, value)
+            else:
+                return jsonify({"error": "Missing rid or where {col,val}"}), 400
+            if isinstance(data, dict) and data.get("error") == "Not found":
+                return jsonify(data), 404
             return jsonify(data), code
 
         if action == "append":
-            if rid is None:
-                return jsonify({"error": "Missing rid"}), 400
             if not isinstance(value, dict):
                 return jsonify({"error": "payload/fields must be an object"}), 400
-            existing, code = sb_get_by_id(table, rid)
-            if code == 404 or existing is None:
-                return jsonify({"error": "Not found"}), 404
-            merged = dict(existing)
-            for k, v in value.items():
-                cur = merged.get(k)
-                if isinstance(cur, dict) and isinstance(v, dict):
-                    cur = {**cur, **v}
-                elif isinstance(cur, list) and isinstance(v, list):
-                    cur = cur + v
-                else:
-                    cur = v
-                merged[k] = cur
-            merged.pop("id", None)
-            data, code = sb_update_by_id(table, rid, merged)
-            return jsonify(data), code
+            # read existing, merge, write back (by rid OR where)
+            if rid is not None:
+                existing, code = sb_get_by_id(table, rid)
+                if code == 404 or existing is None:
+                    return jsonify({"error": "Not found"}), 404
+                merged = dict(existing)
+                for k, v in value.items():
+                    cur = merged.get(k)
+                    if isinstance(cur, dict) and isinstance(v, dict):
+                        cur = {**cur, **v}
+                    elif isinstance(cur, list) and isinstance(v, list):
+                        cur = cur + v
+                    else:
+                        cur = v
+                    merged[k] = cur
+                merged.pop("id", None)
+                data, code = sb_update_by_id(table, rid, merged)
+                return jsonify(data), code
+            elif where_col and where_val is not None:
+                existing, code = sb_get_where(table, where_col, where_val, select="*")
+                if code == 404 or existing is None:
+                    return jsonify({"error": "Not found"}), 404
+                merged = dict(existing)
+                for k, v in value.items():
+                    cur = merged.get(k)
+                    if isinstance(cur, dict) and isinstance(v, dict):
+                        cur = {**cur, **v}
+                    elif isinstance(cur, list) and isinstance(v, list):
+                        cur = cur + v
+                    else:
+                        cur = v
+                    merged[k] = cur
+                merged.pop("id", None)
+                data, code = sb_update_where(table, where_col, where_val, merged)
+                return jsonify(data), code
+            else:
+                return jsonify({"error": "Missing rid or where {col,val}"}), 400
 
         if action in ("write_cell", "append_cell"):
-            if rid is None or not field:
-                return jsonify({"error": "Missing rid or field"}), 400
+            if not field:
+                return jsonify({"error": "Missing field"}), 400
             if field not in ALLOWED_FIELDS[table]:
                 return jsonify({"error": "Invalid field"}), 400
             if action == "append_cell":
-                data, code = sb_merge_cell(table, rid, field, value)
-                return jsonify(data), code
-            # write_cell: overwrite single field
-            stored = process_single_field(table, field, value)
-            r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?id=eq.{rid}", headers=HEADERS, json={field: stored})
-            res = _json_or_text(r)
-            if isinstance(res, list) and res:
-                return jsonify(decode_row(res[0])), r.status_code
-            if isinstance(res, dict):
-                return jsonify(decode_row(res)), r.status_code
-            return jsonify(res), r.status_code
+                if rid is not None:
+                    # reuse by-id merge via read+patch
+                    rec, code = sb_get_by_id(table, rid)
+                    if code == 404 or rec is None:
+                        return jsonify({"error": "Not found"}), 404
+                    cur = rec.get(field)
+                    if isinstance(cur, dict) and isinstance(value, dict):
+                        new_val = {**cur, **value}
+                    elif isinstance(cur, list) and isinstance(value, list):
+                        new_val = cur + value
+                    else:
+                        new_val = value
+                    stored = process_single_field(table, field, new_val)
+                    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?id=eq.{rid}", headers=HEADERS, json={field: stored})
+                    res = _json_or_text(r)
+                    if isinstance(res, list) and res:
+                        return jsonify(decode_row(res[0])), r.status_code
+                    if isinstance(res, dict):
+                        return jsonify(decode_row(res)), r.status_code
+                    return jsonify(res), r.status_code
+                elif where_col and where_val is not None:
+                    data, code = sb_merge_cell_by_where(table, where_col, where_val, field, value)
+                    return jsonify(data), code
+                else:
+                    return jsonify({"error": "Missing rid or where {col,val}"}), 400
+            else:
+                # write_cell: overwrite single field
+                stored = process_single_field(table, field, value)
+                if rid is not None:
+                    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?id=eq.{rid}", headers=HEADERS, json={field: stored})
+                elif where_col and where_val is not None:
+                    qv = quote_plus(str(where_val))
+                    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where_col}=eq.{qv}", headers=HEADERS, json={field: stored})
+                else:
+                    return jsonify({"error": "Missing rid or where {col,val}"}), 400
+                res = _json_or_text(r)
+                if isinstance(res, list) and res:
+                    return jsonify(decode_row(res[0])), r.status_code
+                if isinstance(res, dict):
+                    return jsonify(decode_row(res)), r.status_code
+                return jsonify(res), r.status_code
 
         if action == "delete":
-            if rid is None:
-                return jsonify({"error": "Missing rid"}), 400
-            r = requests.delete(f"{SUPABASE_URL}/rest/v1/{table}?id=eq.{rid}", headers=HEADERS)
-            return jsonify(_json_or_text(r)), r.status_code
+            if rid is not None:
+                # prefer where to avoid assuming 'id'
+                data, code = sb_delete_where(table, "id", rid)
+                return jsonify(data), code
+            elif where_col and where_val is not None:
+                data, code = sb_delete_where(table, where_col, where_val)
+                return jsonify(data), code
+            else:
+                return jsonify({"error": "Missing rid or where {col,val}"}), 400
 
         return jsonify({"error": f"Unknown action '{action}'"}), 400
 

@@ -6,6 +6,12 @@ import os, json, base64, requests
 import zstandard as zstd
 from datetime import datetime
 from urllib.parse import quote_plus
+from flask import Response, stream_with_context
+import uuid
+try:
+    import zstandard as zstd  # already present
+except Exception:
+    zstd = None
 
 # -------------------- 1) App --------------------
 app = Flask(__name__)
@@ -315,6 +321,229 @@ def _norm_value(payload):
     return None
 
 # -------------------- 7) Routes --------------------
+# --- 1) STREAMING EXPORT (NDJSON) ---
+def _export_stream(table: str, select="*", id_gte=None, id_lte=None, limit_total=10000, batch=500):
+    yielded = 0
+    offset = 0
+    while yielded < limit_total:
+        # Simple id range filter by post-fetch; adjust as needed for PK rename
+        rows, code = sb_list(table, limit=min(batch, limit_total - yielded), offset=offset, select=select)
+        if code >= 300 or not isinstance(rows, list) or not rows:
+            break
+        for row in rows:
+            rid = row.get("id")
+            if id_gte is not None and isinstance(rid, int) and rid < id_gte:
+                continue
+            if id_lte is not None and isinstance(rid, int) and rid > id_lte:
+                continue
+            yield (json.dumps(row, ensure_ascii=False) + "\n").encode("utf-8")
+            yielded += 1
+            if yielded >= limit_total:
+                break
+        offset += len(rows)
+
+@app.get("/export/canvas")
+def export_canvas():
+    select = request.args.get("select", "*")
+    id_gte = request.args.get("id_gte", type=int)
+    id_lte = request.args.get("id_lte", type=int)
+    limit_total = request.args.get("limit_total", default=10000, type=int)
+    batch = request.args.get("batch", default=500, type=int)
+    gen = _export_stream("cleanlight_canvas", select, id_gte, id_lte, limit_total, batch)
+    return Response(stream_with_context(gen), mimetype="application/x-ndjson")
+
+@app.get("/export/map")
+def export_map():
+    select = request.args.get("select", "*")
+    id_gte = request.args.get("id_gte", type=int)
+    id_lte = request.args.get("id_lte", type=int)
+    limit_total = request.args.get("limit_total", default=10000, type=int)
+    batch = request.args.get("batch", default=500, type=int)
+    gen = _export_stream("cleanlight_map", select, id_gte, id_lte, limit_total, batch)
+    return Response(stream_with_context(gen), mimetype="application/x-ndjson")
+
+# --- 2) IMPORT SESSIONS (chunked) ---
+_IMPORT_SESSIONS = {}  # WARNING: in-memory for demo. Swap to redis/db for prod.
+
+def _session_get(sid):
+    s = _IMPORT_SESSIONS.get(sid)
+    if not s:
+        return None
+    return s
+
+@app.post("/import/initiate")
+def import_initiate():
+    body = request.get_json(force=True) or {}
+    target = body.get("target")
+    if target not in ("cleanlight_canvas", "cleanlight_map"):
+        return jsonify({"error":"Invalid target"}), 400
+    fmt = body.get("format", "ndjson")
+    if fmt not in ("ndjson", "jsonl"):
+        return jsonify({"error":"format must be ndjson|jsonl"}), 400
+    compression = body.get("compression", "none")
+    if compression not in ("none", "zstd"):
+        return jsonify({"error":"compression must be none|zstd"}), 400
+    mode = body.get("mode", "upsert")
+    if mode not in ("insert", "update", "upsert"):
+        return jsonify({"error":"mode must be insert|update|upsert"}), 400
+    key_col = body.get("key_col", "id")
+    sid = str(uuid.uuid4())
+    _IMPORT_SESSIONS[sid] = {
+        "session_id": sid,
+        "target": target,
+        "format": fmt,
+        "compression": compression,
+        "mode": mode,
+        "key_col": key_col,
+        "received_chunks": 0,
+        "total_chunks": None,
+        "bytes_received": 0,
+        "status": "initiated",
+        "chunks": {},   # index -> bytes
+        "error": None,
+    }
+    return jsonify(_IMPORT_SESSIONS[sid]), 200
+
+def _accept_chunk(sid, idx, total, chunk_bytes):
+    s = _session_get(sid)
+    if not s:
+        return None
+    s["status"] = "receiving"
+    if s["total_chunks"] is None:
+        s["total_chunks"] = int(total)
+    s["chunks"][int(idx)] = chunk_bytes
+    s["received_chunks"] = len(s["chunks"])
+    s["bytes_received"] += len(chunk_bytes)
+    if s["received_chunks"] == s["total_chunks"]:
+        s["status"] = "ready_to_finalize"
+    return s
+
+@app.put("/import/<session_id>/chunk")
+def import_chunk_put(session_id):
+    s = _session_get(session_id)
+    if not s:
+        return jsonify({"error":"session not found"}), 404
+    idx = request.headers.get("X-Chunk-Index")
+    total = request.headers.get("X-Chunks-Total")
+    if idx is None or total is None:
+        return jsonify({"error":"missing X-Chunk-Index / X-Chunks-Total headers"}), 400
+    chunk = request.get_data() or b""
+    st = _accept_chunk(session_id, idx, total, chunk)
+    return jsonify(st), 200
+
+@app.post("/import/<session_id>/chunk")
+def import_chunk_multipart(session_id):
+    s = _session_get(session_id)
+    if not s:
+        return jsonify({"error":"session not found"}), 404
+    idx = request.headers.get("X-Chunk-Index")
+    total = request.headers.get("X-Chunks-Total")
+    if idx is None or total is None:
+        return jsonify({"error":"missing X-Chunk-Index / X-Chunks-Total headers"}), 400
+    if "chunk" not in request.files:
+        return jsonify({"error":"missing form field 'chunk'"}), 400
+    chunk = request.files["chunk"].read()
+    st = _accept_chunk(session_id, idx, total, chunk)
+    return jsonify(st), 200
+
+@app.get("/import/<session_id>/status")
+def import_status(session_id):
+    s = _session_get(session_id)
+    if not s:
+        return jsonify({"error":"session not found"}), 404
+    return jsonify(s), 200
+
+@app.post("/import/<session_id>/abort")
+def import_abort(session_id):
+    if session_id in _IMPORT_SESSIONS:
+        _IMPORT_SESSIONS[session_id]["status"] = "aborted"
+        _IMPORT_SESSIONS.pop(session_id, None)
+        return ("", 200)
+    return jsonify({"error":"session not found"}), 404
+
+@app.post("/import/<session_id>/finalize")
+def import_finalize(session_id):
+    s = _session_get(session_id)
+    if not s:
+        return jsonify({"error":"session not found"}), 404
+    if s["status"] not in ("ready_to_finalize","receiving"):
+        # allow finalize if caller insists
+        pass
+
+    # assemble bytes in order
+    total = s["total_chunks"] or len(s["chunks"])
+    assembled = b"".join(s["chunks"].get(i, b"") for i in range(int(total)))
+    # optional decompress
+    if s["compression"] == "zstd":
+        if not zstd:
+            return jsonify({"error":"zstd not available server-side"}), 500
+        try:
+            assembled = zstd.ZstdDecompressor().decompress(assembled)
+        except Exception as e:
+            s["error"] = f"zstd decompress failed: {e}"
+            return jsonify(s), 400
+
+    # ingest NDJSON
+    s["status"] = "ingesting"
+    lines = assembled.split(b"\n")
+    ok_ins = ok_upd = fail = 0
+    errors = []
+    for i, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception as e:
+            fail += 1
+            errors.append({"line": i, "error": f"json: {e}"})
+            continue
+
+        # choose table
+        table = s["target"]
+        key_col = s["key_col"]
+        mode = s["mode"]
+
+        # if key present, try update/upsert; else insert
+        key_val = obj.get(key_col)
+        fields = {k:v for k,v in obj.items() if k in ALLOWED_FIELDS[table]}  # ignore unknown cols
+
+        try:
+            if key_val is not None and mode in ("update","upsert"):
+                # does it exist?
+                rec, code = sb_get_where(table, key_col, key_val, select="id")
+                if code != 404:
+                    # update existing
+                    _, code2 = sb_update_where(table, key_col, key_val, fields)
+                    if code2 < 300: ok_upd += 1
+                    else:
+                        fail += 1; errors.append({"line": i, "error": f"update status {code2}"})
+                elif mode == "upsert":
+                    _, code3 = sb_insert(table, fields)
+                    if code3 < 300: ok_ins += 1
+                    else:
+                        fail += 1; errors.append({"line": i, "error": f"insert status {code3}"})
+            else:
+                # plain insert
+                _, code4 = sb_insert(table, fields)
+                if code4 < 300: ok_ins += 1
+                else:
+                    fail += 1; errors.append({"line": i, "error": f"insert status {code4}"})
+        except Exception as e:
+            fail += 1
+            errors.append({"line": i, "error": str(e)})
+
+    s["status"] = "done"
+    result = {
+        "rows_processed": ok_ins + ok_upd + fail,
+        "rows_inserted": ok_ins,
+        "rows_updated": ok_upd,
+        "rows_failed": fail,
+        "errors": errors[:50],  # cap
+    }
+    # cleanup memory
+    _IMPORT_SESSIONS.pop(session_id, None)
+    return jsonify(result), 200
+    
 @app.post("/flask/select_full_table")
 def select_full_table():
     body = request.get_json(silent=True) or {}
@@ -540,4 +769,5 @@ def unified_command():
         return jsonify({"error": "bad_request", "details": str(ve)}), 400
     except Exception as e:
         return jsonify({"error": "server_error", "details": str(e)}), 500
+
 

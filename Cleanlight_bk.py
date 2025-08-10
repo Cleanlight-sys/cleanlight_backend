@@ -1,4 +1,4 @@
-# Cleanlight_bk.py — Unified /command backend (auto-decoding by default)
+# Cleanlight_bk.py — Unified /command backend (force-decoding on row reads)
 # Run: gunicorn Cleanlight_bk:app
 
 from flask import Flask, request, jsonify
@@ -24,7 +24,8 @@ HEADERS = {
     "Prefer": "return=representation",  # return mutated rows
 }
 
-ALLOWED_FIELDS = {
+# Writable fields only (reads are unrestricted)
+WRITEABLE_FIELDS = {
     "cleanlight_canvas": [
         "id", "cognition", "mir", "insight", "codex", "images", "checksums", "timestamps"
     ],
@@ -36,11 +37,11 @@ ALLOWED_FIELDS = {
 MAX_IDS_PER_CALL = 25
 DEFAULT_AUTOPAGE_LIMIT = 10000
 
-# ----- Alphabets (stable + legacy) -----
+# -------------------- Alphabets (stable + legacy) --------------------
 def _is_nonchar(cp): return (0xFDD0 <= cp <= 0xFDEF) or (cp & 0xFFFE) == 0xFFFE
 def _is_surrogate(cp): return 0xD800 <= cp <= 0xDFFF
 
-# v1 (legacy) — original: started at 0x20, didn’t exclude quotes/backslash
+# v1 legacy (older stored data)
 def get_base_alphabet_v1(n: int) -> str:
     out = []
     for cp in range(0x20, 0x2FFFF):
@@ -49,7 +50,7 @@ def get_base_alphabet_v1(n: int) -> str:
         if len(out) == n: break
     return ''.join(out)
 
-# v2 (current) — safer: start at 0x21 and exclude quotes/backslash
+# v2 current (safer)
 def get_base_alphabet_v2(n: int) -> str:
     out = []
     for cp in range(0x21, 0x2FFFF):
@@ -60,10 +61,10 @@ def get_base_alphabet_v2(n: int) -> str:
         if len(out) == n: break
     return ''.join(out)
 
-BASE1K            = get_base_alphabet_v2(1000)
-BASE10K           = get_base_alphabet_v2(10000)
-LEGACY_BASE1K     = get_base_alphabet_v1(1000)
-LEGACY_BASE10K    = get_base_alphabet_v1(10000)
+BASE1K         = get_base_alphabet_v2(1000)
+BASE10K        = get_base_alphabet_v2(10000)
+LEGACY_BASE1K  = get_base_alphabet_v1(1000)
+LEGACY_BASE10K = get_base_alphabet_v1(10000)
 
 def int_to_baseN(num: int, alphabet: str) -> str:
     if num == 0: return alphabet[0]
@@ -79,27 +80,22 @@ def baseN_to_int(s: str, alphabet: str) -> int:
         num = num * base + amap[ch]  # KeyError if unknown char
     return num
 
-# ----- std1k / std10k with legacy fallback -----
-import zstandard as zstd
+def _try_decode_std(encoded: str, alph: str) -> bytes:
+    as_int = baseN_to_int(encoded, alph)
+    return as_int.to_bytes((as_int.bit_length() + 7)//8, "big")
 
 def encode_std1k(plaintext: str) -> str:
     cctx = zstd.ZstdCompressor()
     return int_to_baseN(int.from_bytes(cctx.compress(plaintext.encode("utf-8")), "big"), BASE1K)
 
-def _try_decode_std(encoded: str, alph: str) -> bytes:
-    as_int = baseN_to_int(encoded, alph)
-    return as_int.to_bytes((as_int.bit_length() + 7)//8, "big")
-
 def decode_std1k(std1k_str: str) -> str:
-    # try current, then legacy
     for alph in (BASE1K, LEGACY_BASE1K):
         try:
             comp = _try_decode_std(std1k_str, alph)
             return zstd.ZstdDecompressor().decompress(comp).decode("utf-8")
         except Exception:
             continue
-    # give up: return original (already-encoded) string
-    return std1k_str
+    return std1k_str  # give up: return original string
 
 def encode_std10k(image_bytes: bytes) -> str:
     cctx = zstd.ZstdCompressor()
@@ -112,13 +108,11 @@ def decode_std10k(std10k_str: str) -> bytes:
             return zstd.ZstdDecompressor().decompress(comp)
         except Exception:
             continue
-    # if we can’t decode, return the encoded bytes as-is so callers can still round-trip
     return std10k_str.encode("utf-8", errors="ignore")
-
 
 # -------------------- Row/field processing --------------------
 def process_single_field(table: str, field: str, value):
-    if field not in ALLOWED_FIELDS[table]:
+    if field not in WRITEABLE_FIELDS[table]:
         raise ValueError(f"Field {field} not allowed for table {table}")
     if field == "images" and value is not None:
         return encode_std10k(base64.b64decode(value))  # base64 in → std10k stored
@@ -129,13 +123,13 @@ def process_single_field(table: str, field: str, value):
 def process_fields(table: str, data: dict) -> dict:
     out = {}
     for k, v in (data or {}).items():
-        if k not in ALLOWED_FIELDS[table]:
+        if k not in WRITEABLE_FIELDS[table]:
             raise ValueError(f"Field {k} not allowed for table {table}")
         out[k] = process_single_field(table, k, v)
     return out
 
 def decode_row(row: dict) -> dict:
-    """Decode any present std1k/std10k fields in a row."""
+    """Decode std1k/std10k fields if present."""
     row = dict(row)
     if "images" in row and row["images"]:
         try:
@@ -150,9 +144,7 @@ def decode_row(row: dict) -> dict:
                 pass
     return row
 
-def decode_cell_value(table: str, field: str, raw_value, *, raw=False):
-    if raw:
-        return raw_value
+def decode_cell_value(field: str, raw_value):
     if field == "images" and raw_value:
         try:
             return base64.b64encode(decode_std10k(raw_value)).decode("ascii")
@@ -165,7 +157,7 @@ def decode_cell_value(table: str, field: str, raw_value, *, raw=False):
             return raw_value
     return raw_value
 
-# -------------------- Supabase helpers (ALWAYS decode unless raw=True) --------------------
+# -------------------- Supabase helpers --------------------
 def _json_or_text(resp: requests.Response):
     try:
         if resp.content and resp.headers.get("Content-Type", "").startswith("application/json"):
@@ -184,18 +176,9 @@ def sb_list(table: str, limit=50, offset=0, select: str | None = None, *, raw=Fa
         return (data if raw else [decode_row(x) for x in data]), r.status_code
     return data, r.status_code
 
-def sb_get_by_id(table: str, row_id: int, select: str = "*", *, raw=False):
-    r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?id=eq.{row_id}&select={select}", headers=HEADERS)
-    data = _json_or_text(r)
-    if isinstance(data, list):
-        if not data:
-            return None, 404
-        return (data[0] if raw else decode_row(data[0])), 200
-    return data, r.status_code
-
-def sb_get_where(table: str, col: str, val, select: str = "*", *, raw=False):
-    qv = quote_plus(str(val))
-    r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{qv}&select={select}", headers=HEADERS)
+def sb_get_by_key(table: str, key_col: str, key_val, select: str = "*", *, raw=False):
+    qv = quote_plus(str(key_val))
+    r = requests.get(f"{SUPABASE_URL}/rest/v1/{table}?{key_col}=eq.{qv}&select={select}", headers=HEADERS)
     data = _json_or_text(r)
     if isinstance(data, list):
         if not data:
@@ -224,21 +207,18 @@ def sb_update_where(table: str, col: str, val, fields: dict):
         return decode_row(data), r.status_code
     return data, r.status_code
 
-def sb_update_by_id(table: str, row_id: int, fields: dict):
-    return sb_update_where(table, "id", row_id, fields)
-
 def sb_delete_where(table: str, col: str, val):
     qv = quote_plus(str(val))
     r = requests.delete(f"{SUPABASE_URL}/rest/v1/{table}?{col}=eq.{qv}", headers=HEADERS)
     return _json_or_text(r), r.status_code
 
 # -------------------- Read-before-write (silent) --------------------
-def _satisfy_read_before_write(table: str, where_col=None, where_val=None, rid=None):
+def _satisfy_read_before_write(table: str, key_col=None, where_col=None, where_val=None, rid=None):
     try:
-        if rid is not None:
-            _ = sb_get_where(table, "id", rid, select="id", raw=True)
+        if rid is not None and key_col:
+            _ = sb_get_by_key(table, key_col, rid, select=key_col, raw=True)
         elif where_col and where_val is not None:
-            _ = sb_get_where(table, where_col, where_val, select="id", raw=True)
+            _ = sb_get_by_key(table, where_col, where_val, select=where_col, raw=True)
         else:
             _ = sb_list(table, limit=1, offset=0, raw=True)
     except Exception:
@@ -278,8 +258,11 @@ def _norm_rid(payload):
     rid = _pick(payload, "rid","id","TargetRID")
     if rid is not None: return int(rid)
     where = payload.get("where")
-    if isinstance(where, dict) and str(where.get("col")).lower() == "id":
-        return int(where.get("val"))
+    if isinstance(where, dict) and "val" in where:
+        try:
+            return int(where.get("val"))
+        except Exception:
+            return None
     return None
 
 def _norm_field(payload): return _pick(payload, "field","TargetField")
@@ -299,13 +282,14 @@ def health():
 def unified_command():
     body = request.get_json(force=True) or {}
 
-    # Legacy shim
+    # Legacy shim for older callers
     if "action" in body and "table" in body and ("fields" in body or body.get("action") in ("read_table","read_row")):
         body = dict(body)
         body.setdefault("target", body.get("table"))
         w = body.get("where") or {}
-        if body.get("action") == "read_row" and "rid" not in body and str(w.get("col")).lower() == "id":
-            body["rid"] = w.get("val")
+        if body.get("action") == "read_row" and "rid" not in body and "val" in w:
+            try: body["rid"] = int(w.get("val"))
+            except Exception: pass
 
     action   = _norm_action(body.get("action"))
     table    = _norm_table(body)
@@ -313,17 +297,16 @@ def unified_command():
     field    = _norm_field(body)
     value    = _norm_value(body)
     where    = body.get("where") if isinstance(body.get("where"), dict) else None
-    key_col  = body.get("key_col") or "id"
+    key_col  = body.get("key_col") or "id"   # IMPORTANT: set key_col:"map_id" for cleanlight_map
     ids      = body.get("ids") if isinstance(body.get("ids"), list) else None
     select   = body.get("select") or "*"
-    raw      = bool(body.get("raw", False))
 
     where_col = str(where.get("col")) if where and "col" in where else None
     where_val = where.get("val") if where and "val" in where else None
 
     if action is None or table is None:
         return jsonify({"error":"Missing action or target table"}), 400
-    if table not in ALLOWED_FIELDS:
+    if table not in WRITEABLE_FIELDS:
         return jsonify({"error":"Invalid table"}), 400
 
     limit_total = int(body.get("limit_total", DEFAULT_AUTOPAGE_LIMIT))
@@ -331,16 +314,16 @@ def unified_command():
     offset      = int(body.get("offset", 0))
 
     try:
-        # ---------- READS (always decoded unless raw=True) ----------
+        # ---------- READS ----------
         if action == "read_table":
-            rows, code = sb_list(table, min(limit, 1000), offset, select=select, raw=raw)
+            rows, code = sb_list(table, min(limit, 1000), offset, select=select, raw=False)
             return jsonify(rows), code
 
         if action == "read_all":
             rows_accum = []
             off = offset
             while len(rows_accum) < limit_total:
-                batch, code = sb_list(table, min(limit, 1000), off, select=select, raw=raw)
+                batch, code = sb_list(table, min(limit, 1000), off, select=select, raw=False)
                 if code >= 300 or not isinstance(batch, list) or not batch: break
                 rows_accum.extend(batch)
                 off += len(batch)
@@ -348,8 +331,6 @@ def unified_command():
             return jsonify(rows_accum[:limit_total]), 200
 
         if action == "read_table_ids":
-            # returns {"ids":[...], "next_offset": int|null}
-            # Use key_col to project only that column
             raw_list, code = sb_list(table, min(limit, 1000), offset, select=key_col, raw=True)
             if code >= 300 or not isinstance(raw_list, list):
                 return jsonify(raw_list), code
@@ -369,46 +350,46 @@ def unified_command():
                 ids = ids[:MAX_IDS_PER_CALL]
             rows = []
             for v in ids:
-                if key_col == "id":
-                    rec, code = sb_get_by_id(table, int(v), select=select, raw=raw)
-                else:
-                    rec, code = sb_get_where(table, key_col, v, select=select, raw=raw)
+                # Always fetch RAW by key_col, then decode locally (force-decoding)
+                rec, code = sb_get_by_key(table, key_col, v, select=select, raw=True)
                 if code == 404 or rec is None: continue
-                rows.append(rec)
+                rows.append(decode_row(rec))
             return jsonify(rows), 200
 
         if action == "read_row":
+            # Always fetch RAW by key_col or provided where, then decode locally
             if rid is not None:
-                rec, code = sb_get_by_id(table, rid, select=select, raw=raw)
+                rec, code = sb_get_by_key(table, key_col, rid, select=select, raw=True)
             elif where_col and where_val is not None:
-                rec, code = sb_get_where(table, where_col, where_val, select=select, raw=raw)
+                rec, code = sb_get_by_key(table, where_col, where_val, select=select, raw=True)
             else:
                 return jsonify({"error":"Missing rid or where {col,val}"}), 400
             if code == 404 or rec is None:
                 return jsonify({"error":"Not found"}), 404
-            return jsonify(rec), 200
+            return jsonify(decode_row(rec)), 200
 
         if action == "read_cell":
-            if not field: return jsonify({"error":"Missing field"}), 400
-            if field not in ALLOWED_FIELDS[table]: return jsonify({"error":"Invalid field"}), 400
+            if not field:
+                return jsonify({"error":"Missing field"}), 400
+            # Fetch raw, decode the value if it's one of the encoded fields; else pass-through
             if rid is not None:
-                rec, code = sb_get_by_id(table, rid, select=f"id,{field}", raw=True)
+                rec, code = sb_get_by_key(table, key_col, rid, select=f"{key_col},{field}", raw=True)
             elif where_col and where_val is not None:
-                rec, code = sb_get_where(table, where_col, where_val, select=f"id,{field}", raw=True)
+                rec, code = sb_get_by_key(table, where_col, where_val, select=f"{where_col},{field}", raw=True)
             else:
                 return jsonify({"error":"Missing rid or where {col,val}"}), 400
             if code == 404 or rec is None:
                 return jsonify({"error":"Not found"}), 404
-            val = decode_cell_value(table, field, rec.get(field), raw=raw)
-            return jsonify({"id": rec.get("id"), "field": field, "value": val}), 200
+            val = decode_cell_value(field, rec.get(field))
+            return jsonify({key_col: rec.get(key_col), "field": field, "value": val}), 200
 
         if action == "read_column":
-            if not field: return jsonify({"error":"Missing field"}), 400
-            if field not in ALLOWED_FIELDS[table]: return jsonify({"error":"Invalid field"}), 400
-            raw_list, code = sb_list(table, min(limit, 1000), offset, select=f"id,{field}", raw=True)
+            if not field:
+                return jsonify({"error":"Missing field"}), 400
+            raw_list, code = sb_list(table, min(limit, 1000), offset, select=f"{key_col},{field}", raw=True)
             if not isinstance(raw_list, list):
                 return jsonify(raw_list), code
-            out = [{"id": r.get("id"), "value": decode_cell_value(table, field, r.get(field), raw=raw)} for r in raw_list]
+            out = [{key_col: r.get(key_col), "value": decode_cell_value(field, r.get(field))} for r in raw_list]
             return jsonify(out), 200
 
         # ---------- WRITES ----------
@@ -417,16 +398,16 @@ def unified_command():
                 return jsonify({"error":"payload/fields must be an object"}), 400
             if isinstance(value.get("images"), str) and len(value["images"]) > 7_000_000:
                 return jsonify({"error":"images too large"}), 413
-            _satisfy_read_before_write(table, where_col=where_col, where_val=where_val, rid=rid)
+            _satisfy_read_before_write(table, key_col=key_col, where_col=where_col, where_val=where_val, rid=rid)
             data, code = sb_insert(table, value)
             return jsonify(data), code
 
         if action == "update":
             if not isinstance(value, dict):
                 return jsonify({"error":"payload/fields must be an object"}), 400
-            _satisfy_read_before_write(table, where_col=where_col, where_val=where_val, rid=rid)
+            _satisfy_read_before_write(table, key_col=key_col, where_col=where_col, where_val=where_val, rid=rid)
             if rid is not None:
-                data, code = sb_update_by_id(table, rid, value)
+                data, code = sb_update_where(table, key_col, rid, value)
             elif where_col and where_val is not None:
                 data, code = sb_update_where(table, where_col, where_val, value)
             else:
@@ -438,10 +419,11 @@ def unified_command():
         if action == "append":
             if not isinstance(value, dict):
                 return jsonify({"error":"payload/fields must be an object"}), 400
+            # read existing (by rid or where), merge, write back
             if rid is not None:
-                base_rec, code = sb_get_by_id(table, rid, raw=True)
+                base_rec, code = sb_get_by_key(table, key_col, rid, select="*", raw=True)
             elif where_col and where_val is not None:
-                base_rec, code = sb_get_where(table, where_col, where_val, select="*", raw=True)
+                base_rec, code = sb_get_by_key(table, where_col, where_val, select="*", raw=True)
             else:
                 return jsonify({"error":"Missing rid or where {col,val}"}), 400
             if code == 404 or base_rec is None:
@@ -453,23 +435,25 @@ def unified_command():
                 elif isinstance(cur, list) and isinstance(v, list): cur = cur + v
                 else: cur = v
                 merged[k] = cur
+            # never try to overwrite PK
             merged.pop("id", None)
-            _satisfy_read_before_write(table, where_col=where_col, where_val=where_val, rid=rid)
+            merged.pop("map_id", None)
+            _satisfy_read_before_write(table, key_col=key_col, where_col=where_col, where_val=where_val, rid=rid)
             if rid is not None:
-                data, code = sb_update_by_id(table, rid, merged)
+                data, code = sb_update_where(table, key_col, rid, merged)
             else:
                 data, code = sb_update_where(table, where_col, where_val, merged)
             return jsonify(data), code
 
         if action in ("write_cell","append_cell"):
-            if not field: return jsonify({"error":"Missing field"}), 400
-            if field not in ALLOWED_FIELDS[table]: return jsonify({"error":"Invalid field"}), 400
-            _satisfy_read_before_write(table, where_col=where_col, where_val=where_val, rid=rid)
+            if not field:
+                return jsonify({"error":"Missing field"}), 400
+            _satisfy_read_before_write(table, key_col=key_col, where_col=where_col, where_val=where_val, rid=rid)
             if action == "append_cell":
                 if rid is not None:
-                    rec, code = sb_get_by_id(table, rid, raw=True)
+                    rec, code = sb_get_by_key(table, key_col, rid, select="*", raw=True)
                 elif where_col and where_val is not None:
-                    rec, code = sb_get_where(table, where_col, where_val, select="*", raw=True)
+                    rec, code = sb_get_by_key(table, where_col, where_val, select="*", raw=True)
                 else:
                     return jsonify({"error":"Missing rid or where {col,val}"}), 400
                 if code == 404 or rec is None:
@@ -480,10 +464,9 @@ def unified_command():
                 else: new_val = value
                 stored = process_single_field(table, field, new_val)
                 if rid is not None:
-                    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?id=eq.{rid}", headers=HEADERS, json={field: stored})
+                    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{key_col}=eq.{quote_plus(str(rid))}", headers=HEADERS, json={field: stored})
                 else:
-                    qv = quote_plus(str(where_val))
-                    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where_col}=eq.{qv}", headers=HEADERS, json={field: stored})
+                    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where_col}=eq.{quote_plus(str(where_val))}", headers=HEADERS, json={field: stored})
                 res = _json_or_text(r)
                 if isinstance(res, list) and res:
                     return jsonify(decode_row(res[0])), r.status_code
@@ -493,10 +476,9 @@ def unified_command():
             else:
                 stored = process_single_field(table, field, value)
                 if rid is not None:
-                    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?id=eq.{rid}", headers=HEADERS, json={field: stored})
+                    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{key_col}=eq.{quote_plus(str(rid))}", headers=HEADERS, json={field: stored})
                 elif where_col and where_val is not None:
-                    qv = quote_plus(str(where_val))
-                    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where_col}=eq.{qv}", headers=HEADERS, json={field: stored})
+                    r = requests.patch(f"{SUPABASE_URL}/rest/v1/{table}?{where_col}=eq.{quote_plus(str(where_val))}", headers=HEADERS, json={field: stored})
                 else:
                     return jsonify({"error":"Missing rid or where {col,val}"}), 400
                 res = _json_or_text(r)
@@ -508,7 +490,7 @@ def unified_command():
 
         if action == "delete":
             if rid is not None:
-                data, code = sb_delete_where(table, "id", rid)
+                data, code = sb_delete_where(table, key_col, rid)
             elif where_col and where_val is not None:
                 data, code = sb_delete_where(table, where_col, where_val)
             else:
@@ -521,4 +503,3 @@ def unified_command():
         return jsonify({"error":"bad_request","details":str(ve)}), 400
     except Exception as e:
         return jsonify({"error":"server_error","details":str(e)}), 500
-

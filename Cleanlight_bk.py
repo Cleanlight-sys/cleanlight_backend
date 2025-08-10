@@ -29,67 +29,92 @@ ALLOWED_FIELDS = {
         "id", "cognition", "mir", "insight", "codex", "images", "checksums", "timestamps"
     ],
     "cleanlight_map": [
-        "id", "cognition", "mir", "insight", "codex", "images", "pointer_net", "macro_group"
+        "map_id", "pointer_net", "checksum"
     ],
 }
 
 MAX_IDS_PER_CALL = 25
 DEFAULT_AUTOPAGE_LIMIT = 10000
 
-# -------------------- Encoding helpers --------------------
-def get_base_alphabet(n: int) -> str:
-    safe = []
-    for codepoint in range(0x21, 0x2FFFF):
-        if (0xD800 <= codepoint <= 0xDFFF) or (0xFDD0 <= codepoint <= 0xFDEF) or (codepoint & 0xFFFE == 0xFFFE):
-            continue
-        ch = chr(codepoint)
-        if ch in {'"', "'", "\\"}:
-            continue
-        safe.append(ch)
-        if len(safe) == n:
-            break
-    return ''.join(safe)
+# ----- Alphabets (stable + legacy) -----
+def _is_nonchar(cp): return (0xFDD0 <= cp <= 0xFDEF) or (cp & 0xFFFE) == 0xFFFE
+def _is_surrogate(cp): return 0xD800 <= cp <= 0xDFFF
 
-BASE1K = get_base_alphabet(1000)
-BASE10K = get_base_alphabet(10000)
+# v1 (legacy) — original: started at 0x20, didn’t exclude quotes/backslash
+def get_base_alphabet_v1(n: int) -> str:
+    out = []
+    for cp in range(0x20, 0x2FFFF):
+        if _is_surrogate(cp) or _is_nonchar(cp): continue
+        out.append(chr(cp))
+        if len(out) == n: break
+    return ''.join(out)
+
+# v2 (current) — safer: start at 0x21 and exclude quotes/backslash
+def get_base_alphabet_v2(n: int) -> str:
+    out = []
+    for cp in range(0x21, 0x2FFFF):
+        if _is_surrogate(cp) or _is_nonchar(cp): continue
+        ch = chr(cp)
+        if ch in {'"', "'", "\\"}: continue
+        out.append(ch)
+        if len(out) == n: break
+    return ''.join(out)
+
+BASE1K            = get_base_alphabet_v2(1000)
+BASE10K           = get_base_alphabet_v2(10000)
+LEGACY_BASE1K     = get_base_alphabet_v1(1000)
+LEGACY_BASE10K    = get_base_alphabet_v1(10000)
 
 def int_to_baseN(num: int, alphabet: str) -> str:
-    if num == 0:
-        return alphabet[0]
-    base = len(alphabet)
-    digits = []
+    if num == 0: return alphabet[0]
+    base = len(alphabet); digits = []
     while num:
-        digits.append(alphabet[num % base])
-        num //= base
+        digits.append(alphabet[num % base]); num //= base
     return ''.join(reversed(digits))
 
 def baseN_to_int(s: str, alphabet: str) -> int:
-    base = len(alphabet)
-    alpha_map = {ch: i for i, ch in enumerate(alphabet)}
-    num = 0
+    amap = {ch:i for i,ch in enumerate(alphabet)}
+    base = len(alphabet); num = 0
     for ch in s:
-        num = num * base + alpha_map[ch]
+        num = num * base + amap[ch]  # KeyError if unknown char
     return num
+
+# ----- std1k / std10k with legacy fallback -----
+import zstandard as zstd
 
 def encode_std1k(plaintext: str) -> str:
     cctx = zstd.ZstdCompressor()
-    compressed = cctx.compress(plaintext.encode("utf-8"))
-    return int_to_baseN(int.from_bytes(compressed, "big"), BASE1K)
+    return int_to_baseN(int.from_bytes(cctx.compress(plaintext.encode("utf-8")), "big"), BASE1K)
+
+def _try_decode_std(encoded: str, alph: str) -> bytes:
+    as_int = baseN_to_int(encoded, alph)
+    return as_int.to_bytes((as_int.bit_length() + 7)//8, "big")
 
 def decode_std1k(std1k_str: str) -> str:
-    as_int = baseN_to_int(std1k_str, BASE1K)
-    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, "big")
-    return zstd.ZstdDecompressor().decompress(compressed).decode("utf-8")
+    # try current, then legacy
+    for alph in (BASE1K, LEGACY_BASE1K):
+        try:
+            comp = _try_decode_std(std1k_str, alph)
+            return zstd.ZstdDecompressor().decompress(comp).decode("utf-8")
+        except Exception:
+            continue
+    # give up: return original (already-encoded) string
+    return std1k_str
 
 def encode_std10k(image_bytes: bytes) -> str:
     cctx = zstd.ZstdCompressor()
-    compressed = cctx.compress(image_bytes)
-    return int_to_baseN(int.from_bytes(compressed, "big"), BASE10K)
+    return int_to_baseN(int.from_bytes(cctx.compress(image_bytes), "big"), BASE10K)
 
 def decode_std10k(std10k_str: str) -> bytes:
-    as_int = baseN_to_int(std10k_str, BASE10K)
-    compressed = as_int.to_bytes((as_int.bit_length() + 7) // 8, "big")
-    return zstd.ZstdDecompressor().decompress(compressed)
+    for alph in (BASE10K, LEGACY_BASE10K):
+        try:
+            comp = _try_decode_std(std10k_str, alph)
+            return zstd.ZstdDecompressor().decompress(comp)
+        except Exception:
+            continue
+    # if we can’t decode, return the encoded bytes as-is so callers can still round-trip
+    return std10k_str.encode("utf-8", errors="ignore")
+
 
 # -------------------- Row/field processing --------------------
 def process_single_field(table: str, field: str, value):
@@ -496,3 +521,4 @@ def unified_command():
         return jsonify({"error":"bad_request","details":str(ve)}), 400
     except Exception as e:
         return jsonify({"error":"server_error","details":str(e)}), 500
+

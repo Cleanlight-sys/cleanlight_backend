@@ -36,6 +36,16 @@ def _err(msg, code=400, echo=None, hint=None):
 @app.get("/health")
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
+    
+DEFAULT_SELECTS = {
+    "cleanlight_canvas": "*",
+    "cleanlight_tags": "tag,description,created_by,created_at"
+}
+
+DEFAULT_KEYS = {
+    "cleanlight_canvas": "id",
+    "cleanlight_tags": "tag"
+}
 
 @app.post("/command")
 def command():
@@ -47,8 +57,8 @@ def command():
     ids     = body.get("ids")
     value   = body.get("value") or body.get("payload") or body.get("fields")
     where   = body.get("where", {})
-    select  = body.get("select") or "*"
-    key_col = body.get("key_col") or "id"
+    select  = body.get("select") or DEFAULT_SELECTS.get(table, "*")
+    key_col = body.get("key_col") or DEFAULT_KEYS.get(table, "id")
     echo    = body.get("echo")
 
     if not action or not table:
@@ -143,4 +153,5 @@ def command():
         return jsonify(_wrap({"status": "deleted"}, echo=echo))
 
     return _err("Unknown action", echo=echo)
+
 

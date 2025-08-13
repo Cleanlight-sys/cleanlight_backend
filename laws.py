@@ -1,4 +1,4 @@
-# laws.py — Cleanlight Unified Law Enforcement (patched for hints)
+# laws.py — Cleanlight Unified Law Enforcement (full hint-enabled version)
 
 import re
 import base64
@@ -16,7 +16,8 @@ class CleanlightLawError(Exception):
 # ===== Canvas =====
 def enforce_canvas_laws(payload: dict, system_delta: bool = False) -> None:
     if not isinstance(payload, dict):
-        raise CleanlightLawError("Payload must be an object.", hint="Send a JSON object with field values.")
+        raise CleanlightLawError("Payload must be an object.",
+                                 hint="Send a JSON object with field values.")
 
     tags      = payload.get("tags", [])
     codex     = payload.get("codex", "") or ""
@@ -40,7 +41,8 @@ def enforce_canvas_laws(payload: dict, system_delta: bool = False) -> None:
 def _enforce_canonical_tags(tags):
     if tags is None: return
     if not isinstance(tags, list):
-        raise CleanlightLawError("tags must be an array.", hint="Wrap tag values in a JSON array.")
+        raise CleanlightLawError("tags must be an array.",
+                                 hint="Wrap tag values in a JSON array.")
     allowed = set(get_allowed_tags())
     bad = [t for t in tags if t not in allowed]
     if bad:

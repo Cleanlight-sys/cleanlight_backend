@@ -4,8 +4,6 @@ import re
 import base64
 from datetime import datetime
 import zstandard as zstd
-
-from db import get_allowed_tags
 from codec import decode_smart10k
 
 class CleanlightLawError(Exception):
@@ -138,4 +136,5 @@ def enforce_tag_laws(payload: dict, action: str, allow_delete: bool = False) -> 
                                  hint="Set created_by to your username or system name.")
     if not payload.get("created_at"):
         payload["created_at"] = datetime.utcnow().isoformat()
+
 

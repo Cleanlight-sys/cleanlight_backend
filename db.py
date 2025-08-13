@@ -74,7 +74,10 @@ def read_rows(table: str, key_col: str, ids, select="*"):
 
 def insert_row(table: str, payload: dict):
     r = requests.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=payload)
-    r.raise_for_status()
+    try:
+        r.raise_for_status()
+    except requests.exceptions.HTTPError as e:
+        raise RuntimeError(f"Supabase insert failed: {r.status_code} → {r.text}") from e
     data = r.json()
     return data[0] if isinstance(data, list) and data else data
 
@@ -90,3 +93,4 @@ def delete_row(table: str, key_col: str, rid):
     r = requests.delete(f"{SUPABASE_URL}/rest/v1/{table}?{key_col}=eq.{qv}", headers=HEADERS)
     r.raise_for_status()
     return {"status": "deleted"}
+

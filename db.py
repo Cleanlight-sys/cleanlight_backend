@@ -3,8 +3,10 @@
 import os
 import requests
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY")
 
 HEADERS = {
     "apikey": SUPABASE_KEY,
@@ -80,3 +82,4 @@ def delete_row(table: str, key_col: str, rid):
     except requests.exceptions.HTTPError as e:
         raise RuntimeError(f"Supabase delete failed: {r.status_code} → {r.text}") from e
     return True
+

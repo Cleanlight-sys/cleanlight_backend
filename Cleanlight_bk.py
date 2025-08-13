@@ -1,4 +1,4 @@
-# Cleanlight_bk.py — Unified backend
+# Cleanlight_bk.py — Unified backend with hint + echo support
 # Run: gunicorn -w 2 -b 0.0.0.0:8000 Cleanlight_bk:app
 
 from flask import Flask, request, jsonify
@@ -6,24 +6,31 @@ from datetime import datetime
 import db
 import laws
 import codec
+from laws import CleanlightLawError
+import json
 
 app = Flask(__name__)
 
 def _decode_record(record: dict):
     return {k: codec.decode_field(k, v) for k, v in record.items()}
 
-def _mir_snapshot():
+def _mir_snapshot(limit=5):
     try:
-        rows = db.read_all_rows("cleanlight_canvas", select="id,mir")
-        return [{ "id": r.get("id"), "mir": codec.decode_field("mir", r.get("mir")) } for r in rows]
+        rows = db.read_table("cleanlight_canvas", select="id,mir", limit=limit)
+        return [{"id": r.get("id"), "mir": codec.decode_field("mir", r.get("mir"))} for r in rows]
     except Exception:
         return []
 
-def _wrap(data):
-    return {"data": data, "mir": _mir_snapshot()}
+def _wrap(data, echo=None, hint=None):
+    out = {"data": data, "mir": _mir_snapshot()}
+    if echo is not None:
+        out["echo"] = echo
+    if hint is not None:
+        out["hint"] = hint
+    return out
 
-def _err(msg, code=400):
-    return jsonify({"error": msg, "mir": _mir_snapshot()}), code
+def _err(msg, code=400, echo=None, hint=None):
+    return jsonify(_wrap(None, echo=echo, hint=hint or msg)), code
 
 @app.get("/health")
 def health():
@@ -41,44 +48,44 @@ def command():
     where   = body.get("where", {})
     select  = body.get("select") or "*"
     key_col = body.get("key_col") or "id"
+    echo    = body.get("echo")
 
     if not action or not table:
-        return _err("Missing action or table.")
+        return _err("Missing action or table.", echo=echo)
 
     # ---------- READS ----------
     if action == "read_table":
         rows = db.read_table(table, select=select)
-        return jsonify(_wrap([_decode_record(r) for r in rows]))
+        return jsonify(_wrap([_decode_record(r) for r in rows], echo=echo))
 
     if action == "read_all":
         rows = db.read_all_rows(table, select=select)
-        return jsonify(_wrap([_decode_record(r) for r in rows]))
+        return jsonify(_wrap([_decode_record(r) for r in rows], echo=echo))
 
     if action == "read_row":
         rec = db.read_row(table, key_col, rid, select=select)
-        if not rec: return _err("Not found", 404)
-        return jsonify(_wrap(_decode_record(rec)))
+        if not rec: return _err("Not found", 404, echo=echo)
+        return jsonify(_wrap(_decode_record(rec), echo=echo))
 
     if action == "read_rows":
-        if not ids: return _err("Missing ids")
+        if not ids: return _err("Missing ids", echo=echo)
         rows = db.read_rows(table, key_col, ids, select=select)
-        return jsonify(_wrap([_decode_record(r) for r in rows]))
+        return jsonify(_wrap([_decode_record(r) for r in rows], echo=echo))
 
     if action == "read_cell":
-        if not field: return _err("Missing field")
+        if not field: return _err("Missing field", echo=echo)
         rec = db.read_row(table, key_col, rid, select=f"{key_col},{field}")
-        if not rec: return _err("Not found", 404)
+        if not rec: return _err("Not found", 404, echo=echo)
         out = {key_col: rec[key_col], "field": field, "value": codec.decode_field(field, rec.get(field))}
-        return jsonify(_wrap(out))
+        return jsonify(_wrap(out, echo=echo))
 
     if action == "read_column":
-        if not field: return _err("Missing field")
+        if not field: return _err("Missing field", echo=echo)
         rows = db.read_table(table, select=f"{key_col},{field}")
         out = [{key_col: r[key_col], "value": codec.decode_field(field, r.get(field))} for r in rows]
-        return jsonify(_wrap(out))
+        return jsonify(_wrap(out, echo=echo))
 
     # ---------- WRITES ----------
-    # Optional normalization: if single string image → list
     def _normalize_images(val: dict):
         if isinstance(val, dict) and "images" in val and isinstance(val["images"], str):
             val["images"] = [val["images"]]
@@ -86,76 +93,36 @@ def command():
 
     if action in ("write", "insert", "create"):
         value = _normalize_images(value)
-        if table == "cleanlight_canvas":
-            laws.enforce_canvas_laws(value, system_delta=body.get("system_delta", False))
-        elif table == "cleanlight_tags":
-            laws.enforce_tag_laws(value, action="insert")
-        encoded = {k: codec.encode_field(k, v) for k, v in value.items()}
-        rec = db.insert_row(table, encoded)
-        return jsonify(_wrap(_decode_record(rec)))
+        try:
+            if table == "cleanlight_canvas":
+                laws.enforce_canvas_laws(value, system_delta=body.get("system_delta", False))
+            elif table == "cleanlight_tags":
+                laws.enforce_tag_laws(value, action="insert")
+        except CleanlightLawError as e:
+            return _err(str(e), 400, echo=echo, hint=getattr(e, "hint", str(e)))
 
-    if action == "update":
+        encoded = {k: codec.encode_field(k, v) for k, v in value.items()}
+        inserted = db.insert_row(table, encoded)
+        return jsonify(_wrap(_decode_record(inserted), echo=echo))
+
+    if action in ("update", "patch"):
+        if not rid: return _err("Missing rid", echo=echo)
         value = _normalize_images(value)
-        if table == "cleanlight_canvas":
-            laws.enforce_canvas_laws(value, system_delta=body.get("system_delta", False))
-        elif table == "cleanlight_tags":
-            laws.enforce_tag_laws(value, action="update")
+        try:
+            if table == "cleanlight_canvas":
+                laws.enforce_canvas_laws(value, system_delta=body.get("system_delta", False))
+            elif table == "cleanlight_tags":
+                laws.enforce_tag_laws(value, action="update")
+        except CleanlightLawError as e:
+            return _err(str(e), 400, echo=echo, hint=getattr(e, "hint", str(e)))
+
         encoded = {k: codec.encode_field(k, v) for k, v in value.items()}
-        rec = db.update_row(table, key_col, rid, encoded)
-        return jsonify(_wrap(_decode_record(rec)))
-
-    if action == "append":
-        rec = db.read_row(table, key_col, rid)
-        if not rec: return _err("Not found", 404)
-        merged = dict(rec)
-        # decode first so merges happen on logical (decoded) shapes
-        merged = _decode_record(merged)
-        value  = _normalize_images(value)
-        for k, v in value.items():
-            if isinstance(merged.get(k), list) and isinstance(v, list):
-                merged[k] = merged[k] + v
-            elif isinstance(merged.get(k), dict) and isinstance(v, dict):
-                merged[k] = {**merged[k], **v}
-            else:
-                merged[k] = v
-        if table == "cleanlight_canvas":
-            laws.enforce_canvas_laws(merged, system_delta=body.get("system_delta", False))
-        elif table == "cleanlight_tags":
-            laws.enforce_tag_laws(merged, action="update")
-        encoded = {k: codec.encode_field(k, v) for k, v in merged.items()}
-        rec = db.update_row(table, key_col, rid, encoded)
-        return jsonify(_wrap(_decode_record(rec)))
-
-    if action in ("write_cell", "append_cell"):
-        if not field: return _err("Missing field")
-        rec = db.read_row(table, key_col, rid)
-        if not rec: return _err("Not found", 404)
-        logical = _decode_record(rec)
-        if action == "append_cell":
-            cur = logical.get(field)
-            if isinstance(cur, list) and isinstance(value, list):
-                logical[field] = cur + value
-            elif isinstance(cur, dict) and isinstance(value, dict):
-                logical[field] = {**cur, **value}
-            else:
-                logical[field] = value
-        else:
-            logical[field] = value
-        if table == "cleanlight_canvas":
-            laws.enforce_canvas_laws(logical, system_delta=body.get("system_delta", False))
-        elif table == "cleanlight_tags":
-            laws.enforce_tag_laws(logical, action="update")
-        encoded_val = codec.encode_field(field, logical[field])
-        updated = db.update_row(table, key_col, rid, {field: encoded_val})
-        return jsonify(_wrap(_decode_record(updated)))
+        updated = db.update_row(table, key_col, rid, encoded)
+        return jsonify(_wrap(_decode_record(updated), echo=echo))
 
     if action == "delete":
-        if table == "cleanlight_tags":
-            laws.enforce_tag_laws(value or {}, action="delete", allow_delete=body.get("allow_delete", False))
+        if not rid: return _err("Missing rid", echo=echo)
         db.delete_row(table, key_col, rid)
-        return jsonify(_wrap({"status": "deleted"}))
+        return jsonify(_wrap({"status": "deleted"}, echo=echo))
 
-    return _err("Invalid action", 400)
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8000, debug=True)
+    return _err("Unknown action", echo=echo)

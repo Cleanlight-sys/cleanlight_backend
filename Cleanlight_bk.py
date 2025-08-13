@@ -85,59 +85,58 @@ def command():
         out = [{key_col: r[key_col], "value": codec.decode_field(field, r.get(field))} for r in rows]
         return jsonify(_wrap(out, echo=echo))
 
-# ---------- WRITES ----------
-def _normalize_images(val: dict):
-    if isinstance(val, dict) and "images" in val and isinstance(val["images"], str):
-        val["images"] = [val["images"]]
-    return val
+    # ---------- WRITES ----------
+    def _normalize_images(val: dict):
+        if isinstance(val, dict) and "images" in val and isinstance(val["images"], str):
+            val["images"] = [val["images"]]
+        return val
 
-if action in ("write", "insert", "create"):
-    value = _normalize_images(value)
-    try:
-        if table == "cleanlight_canvas":
-            laws.enforce_canvas_laws(value, system_delta=body.get("system_delta", False))
-        elif table == "cleanlight_tags":
-            laws.enforce_tag_laws(value, action="insert")
-    except CleanlightLawError as e:
-        return _err(str(e), 400, echo=echo, hint=getattr(e, "hint", str(e)))
+    if action in ("write", "insert", "create"):
+        value = _normalize_images(value)
+        try:
+            if table == "cleanlight_canvas":
+                laws.enforce_canvas_laws(value, system_delta=body.get("system_delta", False))
+            elif table == "cleanlight_tags":
+                laws.enforce_tag_laws(value, action="insert")
+        except CleanlightLawError as e:
+            return _err(str(e), 400, echo=echo, hint=getattr(e, "hint", str(e)))
 
-    encoded = {k: codec.encode_field(k, v) for k, v in value.items()}
-    try:
-        inserted = db.insert_row(table, encoded)
-    except RuntimeError as e:
-        return _err("Insert failed", 500, echo=echo, hint=str(e))
+        encoded = {k: codec.encode_field(k, v) for k, v in value.items()}
+        try:
+            inserted = db.insert_row(table, encoded)
+        except RuntimeError as e:
+            return _err("Insert failed", 500, echo=echo, hint=str(e))
 
-    return jsonify(_wrap(_decode_record(inserted), echo=echo))
+        return jsonify(_wrap(_decode_record(inserted), echo=echo))
 
-if action in ("update", "patch"):
-    if not rid:
-        return _err("Missing rid", echo=echo)
-    value = _normalize_images(value)
-    try:
-        if table == "cleanlight_canvas":
-            laws.enforce_canvas_laws(value, system_delta=body.get("system_delta", False))
-        elif table == "cleanlight_tags":
-            laws.enforce_tag_laws(value, action="update")
-    except CleanlightLawError as e:
-        return _err(str(e), 400, echo=echo, hint=getattr(e, "hint", str(e)))
+    if action in ("update", "patch"):
+        if not rid:
+            return _err("Missing rid", echo=echo)
+        value = _normalize_images(value)
+        try:
+            if table == "cleanlight_canvas":
+                laws.enforce_canvas_laws(value, system_delta=body.get("system_delta", False))
+            elif table == "cleanlight_tags":
+                laws.enforce_tag_laws(value, action="update")
+        except CleanlightLawError as e:
+            return _err(str(e), 400, echo=echo, hint=getattr(e, "hint", str(e)))
 
-    encoded = {k: codec.encode_field(k, v) for k, v in value.items()}
-    try:
-        updated = db.update_row(table, key_col, rid, encoded)
-    except RuntimeError as e:
-        return _err("Update failed", 500, echo=echo, hint=str(e))
+        encoded = {k: codec.encode_field(k, v) for k, v in value.items()}
+        try:
+            updated = db.update_row(table, key_col, rid, encoded)
+        except RuntimeError as e:
+            return _err("Update failed", 500, echo=echo, hint=str(e))
 
-    return jsonify(_wrap(_decode_record(updated), echo=echo))
+        return jsonify(_wrap(_decode_record(updated), echo=echo))
 
-if action == "delete":
-    if not rid:
-        return _err("Missing rid", echo=echo)
-    try:
-        db.delete_row(table, key_col, rid)
-    except RuntimeError as e:
-        return _err("Delete failed", 500, echo=echo, hint=str(e))
+    if action == "delete":
+        if not rid:
+            return _err("Missing rid", echo=echo)
+        try:
+            db.delete_row(table, key_col, rid)
+        except RuntimeError as e:
+            return _err("Delete failed", 500, echo=echo, hint=str(e))
 
-    return jsonify(_wrap({"status": "deleted"}, echo=echo))
+        return jsonify(_wrap({"status": "deleted"}, echo=echo))
 
-return _err("Unknown action", echo=echo)
-
+    return _err("Unknown action", echo=echo)

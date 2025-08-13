@@ -12,7 +12,10 @@ class CleanlightLawError(Exception):
     def __init__(self, message, hint=None):
         super().__init__(message)
         self.hint = hint
-
+def get_allowed_tags():
+    from db import read_column
+    rows = read_column("cleanlight_tags", "tag", "tag")
+    return [r["value"] for r in rows if "value" in r]
 # ===== Canvas =====
 def enforce_canvas_laws(payload: dict, system_delta: bool = False) -> None:
     if not isinstance(payload, dict):
@@ -135,3 +138,4 @@ def enforce_tag_laws(payload: dict, action: str, allow_delete: bool = False) -> 
                                  hint="Set created_by to your username or system name.")
     if not payload.get("created_at"):
         payload["created_at"] = datetime.utcnow().isoformat()
+

@@ -63,8 +63,13 @@ def _enforce_insight(insight: str):
         raise CleanlightLawError("Insight fails depth check (too shallow/repetitive).")
 
 def _enforce_fact_reason_separation(codex: str, mir: str, insight: str):
-    reason_terms = ["because","therefore","thus","suggests","likely","uncertain","hypothesis"]
-    fact_patterns = [r"\b(is|are|was|were)\b", r"\b(measured|recorded|observed)\b", r"\b\d{4}\b"]
+    reason_terms = ["because", "therefore", "thus", "suggests", "likely", "uncertain", "hypothesis"]
+    # Match full words only, not inside other words
+    fact_patterns = [
+        r"(?<!\w)(?:is|are|was|were)(?!\w)",
+        r"(?<!\w)(?:measured|recorded|observed)(?!\w)",
+        r"\b\d{4}\b"
+    ]
     if any(t in (codex or "").lower() for t in reason_terms):
         raise CleanlightLawError("Codex contains reasoning language.")
     il = (insight or "").lower()
@@ -113,3 +118,4 @@ def enforce_tag_laws(payload: dict, action: str, allow_delete: bool = False) -> 
         raise CleanlightLawError("created_by must be present and non-empty.")
     if not payload.get("created_at"):
         payload["created_at"] = datetime.utcnow().isoformat()
+

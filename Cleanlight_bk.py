@@ -1,13 +1,14 @@
 # Cleanlight_bk.py — Unified backend with hint + echo support
 # Run: gunicorn -w 2 -b 0.0.0.0:8000 Cleanlight_bk:app
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context
 from datetime import datetime
 import db
 import laws
 import codec
 from laws import CleanlightLawError
 import json
+import time
 
 app = Flask(__name__)
 
@@ -64,28 +65,23 @@ def command():
 
     if action == "read_row":
         rec = db.read_row(table, key_col, rid, select=select)
-        if not rec:
-            return _err("Not found", 404, echo=echo)
+        if not rec: return _err("Not found", 404, echo=echo)
         return jsonify(_wrap(_decode_record(rec), echo=echo))
 
     if action == "read_rows":
-        if not ids:
-            return _err("Missing ids", echo=echo)
+        if not ids: return _err("Missing ids", echo=echo)
         rows = db.read_rows(table, key_col, ids, select=select)
         return jsonify(_wrap([_decode_record(r) for r in rows], echo=echo))
 
     if action == "read_cell":
-        if not field:
-            return _err("Missing field", echo=echo)
+        if not field: return _err("Missing field", echo=echo)
         rec = db.read_row(table, key_col, rid, select=f"{key_col},{field}")
-        if not rec:
-            return _err("Not found", 404, echo=echo)
+        if not rec: return _err("Not found", 404, echo=echo)
         out = {key_col: rec[key_col], "field": field, "value": codec.decode_field(field, rec.get(field))}
         return jsonify(_wrap(out, echo=echo))
 
     if action == "read_column":
-        if not field:
-            return _err("Missing field", echo=echo)
+        if not field: return _err("Missing field", echo=echo)
         rows = db.read_table(table, select=f"{key_col},{field}")
         out = [{key_col: r[key_col], "value": codec.decode_field(field, r.get(field))} for r in rows]
         return jsonify(_wrap(out, echo=echo))
@@ -112,7 +108,9 @@ def command():
         except RuntimeError as e:
             return _err("Insert failed", 500, echo=echo, hint=str(e))
 
-        return jsonify(_wrap(_decode_record(inserted), echo=echo))
+        def generate():
+            yield json.dumps(_wrap(_decode_record(inserted), echo=echo))
+        return Response(stream_with_context(generate()), mimetype='application/json')
 
     if action in ("update", "patch"):
         if not rid:
@@ -145,3 +143,4 @@ def command():
         return jsonify(_wrap({"status": "deleted"}, echo=echo))
 
     return _err("Unknown action", echo=echo)
+

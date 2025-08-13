@@ -103,13 +103,6 @@ def encode_field(field: str, value):
         return [_encode_image_item(value)]
     return encode_smart1k(value if isinstance(value, str) else str(value))
 
-    if field == "images":
-        if value is None: return None
-        if isinstance(value, list): return [_encode_image_item(v) for v in value]
-        return [_encode_image_item(value)]  # normalize single string to list
-
-    return encode_smart1k(value if isinstance(value, str) else str(value))
-
 def decode_field(field: str, value):
     if field == "cognition": return value
 
@@ -128,4 +121,3 @@ def decode_field(field: str, value):
         try: return decode_smart1k(value)
         except Exception: return value
     return value
-

@@ -14,7 +14,9 @@ def get_allowed_tags():
     from db import read_column
     rows = read_column("cleanlight_tags", "tag", "tag")
     return [r["value"] for r in rows if "value" in r]
+    
 # ===== Canvas =====
+
 def enforce_canvas_laws(payload: dict, system_delta: bool = False) -> None:
     if not isinstance(payload, dict):
         raise CleanlightLawError("Payload must be an object.",
@@ -78,14 +80,19 @@ def _enforce_insight(insight: str):
         raise CleanlightLawError("Insight fails depth check (too shallow/repetitive).",
                                  hint="Add more variety, technical terms, or logical connectors.")
 
-def _enforce_fact_reason_separation(codex: str, mir: str, insight: str):
-    reason_terms = ["because","therefore","thus","suggests","likely","uncertain","hypothesis"]
+def _enforce_fact_reason_separation(codex, mir: str, insight: str):
+    reason_terms = ["because", "therefore", "thus", "suggests", "likely", "uncertain", "hypothesis"]
     fact_patterns = [r"\b(is|are|was|were)\b", r"\b(measured|recorded|observed)\b", r"\b\d{4}\b"]
-    if any(t in (codex or "").lower() for t in reason_terms):
+
+    # Accept string or structured codex
+    codex_text = codex if isinstance(codex, str) else str(codex)
+
+    if any(t in codex_text.lower() for t in reason_terms):
         raise CleanlightLawError("Codex contains reasoning language.",
                                  hint="Move reasoning words into the 'insight' field.")
-    il = (insight or "").lower()
-    if any(re.search(p, il) for p in fact_patterns):
+
+    insight_text = insight.lower()
+    if any(re.search(p, insight_text) for p in fact_patterns):
         raise CleanlightLawError("Insight contains factual statements.",
                                  hint="Move factual data into the 'codex' field.")
 
@@ -140,6 +147,7 @@ def enforce_tag_laws(payload: dict, action: str, allow_delete: bool = False) -> 
                                  hint="Set created_by to your username or system name.")
     if not payload.get("created_at"):
         payload["created_at"] = datetime.utcnow().isoformat()
+
 
 
 

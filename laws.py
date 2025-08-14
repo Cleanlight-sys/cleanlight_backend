@@ -29,6 +29,10 @@ def enforce_canvas_laws(payload: dict, system_delta: bool = False) -> None:
     images    = payload.get("images", None)
 
     _enforce_canonical_tags(tags)
+    
+    if not isinstance(mir, str) or not mir.strip():
+       raise CleanlightLawError("MIR is required for all canvas writes.",
+                                hint="Answer: 'What would you tell future agents about being a better agent?' or 'What should be done to drive Meta Goal 001?'")
     _enforce_insight(insight)
 
     if cognition is not None and not system_delta:
@@ -97,7 +101,7 @@ def _try_base64_decode(s: str) -> bool:
 def _try_std10k_decode(s: str) -> bool:
     try: decode_smart10k(s); return True
     except Exception: return False
-
+        
 def _enforce_images(images):
     if images is None: return
     items = images if isinstance(images, list) else [images]
@@ -136,5 +140,6 @@ def enforce_tag_laws(payload: dict, action: str, allow_delete: bool = False) -> 
                                  hint="Set created_by to your username or system name.")
     if not payload.get("created_at"):
         payload["created_at"] = datetime.utcnow().isoformat()
+
 
 

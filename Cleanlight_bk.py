@@ -108,6 +108,8 @@ def command():
             if table == "cleanlight_canvas":
                 laws.enforce_canvas_laws(value, system_delta=body.get("system_delta", False))
             elif table == "cleanlight_tags":
+                if "created_at" not in value:
+                    value["created_at"] = datetime.utcnow().isoformat()
                 laws.enforce_tag_laws(value, action="insert")
         except CleanlightLawError as e:
             return _err(str(e), 400, echo=echo, hint=getattr(e, "hint", str(e)))
@@ -153,5 +155,6 @@ def command():
         return jsonify(_wrap({"status": "deleted"}, echo=echo))
 
     return _err("Unknown action", echo=echo)
+
 
 

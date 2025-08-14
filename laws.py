@@ -1,4 +1,4 @@
-# laws.py (Corrected Insight vs. MIR enforcement)
+# laws.py — Cleanlight Unified Law Enforcement (patched for insight tier flexibility)
 
 import re
 import base64
@@ -16,6 +16,7 @@ def get_allowed_tags():
     rows = read_column("cleanlight_tags", "tag", "tag")
     return [r["value"] for r in rows if "value" in r]
 
+# ===== Canvas =====
 def enforce_canvas_laws(payload: dict, system_delta: bool = False) -> None:
     if not isinstance(payload, dict):
         raise CleanlightLawError("Payload must be an object.",
@@ -35,14 +36,14 @@ def enforce_canvas_laws(payload: dict, system_delta: bool = False) -> None:
         raise CleanlightLawError("MIR is required for all canvas writes.",
                                  hint="Answer: 'What would you tell future agents about being a better agent?' or 'What should be done to drive Meta Goal 001?'")
 
-    _enforce_insight_structure(codex, insight)
-    _enforce_mir_quality(mir)
+    _enforce_insight(insight)
 
     if cognition is not None and not system_delta:
         raise CleanlightLawError("Cognition writes require system_delta=true.",
                                  hint="Add 'system_delta': true to your request if writing cognition.")
 
-    _enforce_reference(reference)
+    _enforce_fact_reason_separation(codex, mir, insight)
+    _enforce_reference(reference, insight)
     _enforce_images(images)
 
 def _enforce_canonical_tags(tags):
@@ -57,31 +58,6 @@ def _enforce_canonical_tags(tags):
         raise CleanlightLawError(f"Canonical Tag Law: unknown tag(s): {bad}",
                                  hint=f"Use one of: {sorted(allowed)} or try: {suggestions}")
 
-def _enforce_insight_structure(codex, insight: str):
-    if not isinstance(insight, str) or not insight.strip():
-        raise CleanlightLawError("Insight is required and cannot be empty.",
-                                 hint="Insight should provide semantic meaning or justification for the codex.")
-
-    fact_patterns = [r"\b(is|are|was|were)\b", r"\b(measured|recorded|observed)\b", r"\b\d{4}\b"]
-    insight_text = insight.lower()
-    if any(re.search(p, insight_text) for p in fact_patterns):
-        raise CleanlightLawError("Insight contains factual statements.",
-                                 hint="Move factual data into the 'codex' field.")
-
-    reason_terms = ["because", "therefore", "thus", "suggests", "likely", "uncertain", "hypothesis"]
-    codex_text = codex if isinstance(codex, str) else str(codex)
-    if any(t in codex_text.lower() for t in reason_terms):
-        raise CleanlightLawError("Codex contains reasoning language.",
-                                 hint="Move reasoning words into the 'insight' field.")
-
-def _enforce_mir_quality(mir: str):
-    if _compressed_size_bytes(mir) > 3*1024:
-        raise CleanlightLawError("MIR exceeds 3KB compressed.",
-                                 hint="Tighten your MIR reasoning or split into separate reflections.")
-    if _semantic_depth_score(mir) < 0.2:
-        raise CleanlightLawError("MIR fails depth check (too shallow/repetitive).",
-                                 hint="Make MIR more diverse, reflective, and structurally insightful.")
-
 def _compressed_size_bytes(text: str) -> int:
     cctx = zstd.ZstdCompressor()
     return len(cctx.compress(text.encode("utf-8")))
@@ -94,7 +70,27 @@ def _semantic_depth_score(text: str) -> float:
     tech = sum(1 for t in toks if len(t) > 8)
     return uniq*0.5 + (connectors/len(toks))*2 + (tech/len(toks))*3
 
-def _enforce_reference(reference: str):
+def _enforce_insight(insight: str):
+    if not isinstance(insight, str) or not insight.strip():
+        raise CleanlightLawError("Insight is required and cannot be empty.",
+                                 hint="Provide reasoning text in the 'insight' field.")
+    if _compressed_size_bytes(insight) > 3*1024:
+        raise CleanlightLawError("Insight exceeds 3KB compressed.",
+                                 hint="Shorten your insight text or split into multiple entries.")
+    if _semantic_depth_score(insight) < 0.2:
+        raise CleanlightLawError("Insight fails depth check (too shallow/repetitive).",
+                                 hint="Add more variety, technical terms, or logical connectors.")
+
+def _enforce_fact_reason_separation(codex, mir: str, insight: str):
+    reason_terms = ["because", "therefore", "thus", "suggests", "likely", "uncertain", "hypothesis"]
+
+    codex_text = codex if isinstance(codex, str) else str(codex)
+    if any(t in codex_text.lower() for t in reason_terms):
+        raise CleanlightLawError("Codex contains reasoning language.",
+                                 hint="Move reasoning words into the 'insight' field.")
+    # NOTE: factual checks for insight removed — now governed by depth/structure rules
+
+def _enforce_reference(reference: str, insight: str):
     if reference and _compressed_size_bytes(reference) > 5*1024:
         raise CleanlightLawError("Reference exceeds 5KB compressed.",
                                  hint="Shorten or compress your reference text.")
@@ -120,3 +116,28 @@ def _enforce_images(images):
         if len(v) > 10_000_000:
             raise CleanlightLawError(f"images[{idx}] too large.",
                                      hint="Resize or compress the image below 10MB.")
+
+# ===== Tags =====
+_TAG_RE = re.compile(r"^[a-z0-9_]+$")
+
+def enforce_tag_laws(payload: dict, action: str, allow_delete: bool = False) -> None:
+    if action == "delete":
+        if not allow_delete:
+            raise CleanlightLawError("Tag deletion requires allow_delete=true.",
+                                     hint="Add 'allow_delete': true to your request.")
+        return
+    if not isinstance(payload, dict):
+        raise CleanlightLawError("Payload must be an object.",
+                                 hint="Send a JSON object with tag, description, and created_by.")
+    tag = payload.get("tag",""); desc = payload.get("description",""); who = payload.get("created_by","")
+    if not isinstance(tag, str) or not _TAG_RE.fullmatch(tag):
+        raise CleanlightLawError("Tag must be lowercase alphanumeric + underscores.",
+                                 hint="Example valid tag: 'system_delta'")
+    if not isinstance(desc, str) or len(desc.strip()) < 10:
+        raise CleanlightLawError("Tag description must be ≥ 10 characters.",
+                                 hint="Write a longer description for the tag.")
+    if not isinstance(who, str) or not who.strip():
+        raise CleanlightLawError("created_by must be present and non-empty.",
+                                 hint="Set created_by to your username or system name.")
+    if not payload.get("created_at"):
+        payload["created_at"] = datetime.utcnow().isoformat()

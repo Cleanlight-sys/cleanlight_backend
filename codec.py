@@ -104,8 +104,11 @@ def encode_field(field: str, value):
     return encode_smart1k(value if isinstance(value, str) else str(value))
 
 def decode_field(field: str, value):
-    if field == "cognition": return value
+    # Never decode system or plaintext fields
+    if field in ("cognition", "created_at", "tag", "description", "created_by"):
+        return value
 
+    # Decode image(s) if present
     if field == "images":
         if value is None: return None
         if isinstance(value, list):
@@ -117,7 +120,11 @@ def decode_field(field: str, value):
         try: return [_decode_image_item(value)]
         except Exception: return [value]
 
+    # Decode smart1k if it looks like baseN
     if isinstance(value, str) and looks_like_baseN(value):
         try: return decode_smart1k(value)
         except Exception: return value
+
+    # Return as-is otherwise
     return value
+

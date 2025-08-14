@@ -95,11 +95,14 @@ def _decode_image_item(s10k_str: str) -> str:
     return base64.b64encode(raw).decode("ascii")
 
 def encode_field(field: str, value):
-    if field in ("cognition", "created_at"):
-        return value  # Skip encoding for system fields
+    # Skip encoding for system and plain-text fields in tag table
+    if field in ("cognition", "created_at", "tag", "description", "created_by"):
+        return value
     if field == "images":
-        if value is None: return None
-        if isinstance(value, list): return [_encode_image_item(v) for v in value]
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return [_encode_image_item(v) for v in value]
         return [_encode_image_item(value)]
     return encode_smart1k(value if isinstance(value, str) else str(value))
 
@@ -127,4 +130,5 @@ def decode_field(field: str, value):
 
     # Return as-is otherwise
     return value
+
 

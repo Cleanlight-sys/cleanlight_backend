@@ -231,3 +231,112 @@ def command():
         return jsonify(_wrap({"status": "deleted"}, echo=echo))
 
     return _err("Unknown action", echo=echo)
+
+# ----- One-time admin migration for encoded tags -----
+@app.post("/admin/migrate_encoded_tags")
+def migrate_encoded_tags():
+    """
+    One-time fixer for legacy rows where tags[] items were encoded.
+    Args (JSON):
+      dry_run: bool (default True) → if True, no writes performed
+      limit: int (optional)        → cap number of rows processed
+    """
+    body = request.get_json(silent=True) or {}
+    dry_run = body.get("dry_run", True)
+    limit = body.get("limit")
+
+    # Helper: validate canonical tag format (must match tag law)
+    import re
+    TAG_RE = re.compile(r"^[a-z0-9_]+$")
+
+    def is_canonical_tag(s: str) -> bool:
+        return isinstance(s, str) and bool(TAG_RE.fullmatch(s))
+
+    changed = []
+    examined = 0
+    created_tags = set()
+    decoded_counts = {"rows_changed": 0, "items_decoded": 0}
+
+    # Pull rows
+    rows = db.read_all_rows("cleanlight_canvas", select="id,tags")
+    if isinstance(limit, int) and limit > 0:
+        rows = rows[:limit]
+
+    # Build current allowed tag set
+    try:
+        allowed_rows = db.read_table("cleanlight_tags", select="tag")
+        allowed = {r["tag"] for r in allowed_rows}
+    except Exception:
+        allowed = set()
+
+    for r in rows:
+        examined += 1
+        rid = r.get("id")
+        tags = r.get("tags")
+
+        # Skip non-list tags
+        if not isinstance(tags, list) or not tags:
+            continue
+
+        new_tags = []
+        row_changed = False
+
+        for item in tags:
+            if isinstance(item, str) and codec.looks_like_baseN(item):
+                try:
+                    decoded = codec.decode_smart1k(item)
+                    if is_canonical_tag(decoded):
+                        new_tags.append(decoded)
+                        decoded_counts["items_decoded"] += 1
+                        row_changed = True
+                    else:
+                        new_tags.append(item)
+                    continue
+                except Exception:
+                    pass
+
+            new_tags.append(item)
+
+        # Normalize uniques while preserving order
+        if row_changed:
+            seen = set()
+            normalized = []
+            for t in new_tags:
+                if t not in seen:
+                    seen.add(t)
+                    normalized.append(t)
+            new_tags = normalized
+
+            # Ensure every decoded tag exists in cleanlight_tags
+            for t in new_tags:
+                if is_canonical_tag(t) and t not in allowed:
+                    if not dry_run:
+                        try:
+                            db.insert_row("cleanlight_tags", {
+                                "tag": t,
+                                "description": f"Auto-created during tag migration for canvas row {rid}.",
+                                "created_by": "migration"
+                            })
+                            allowed.add(t)
+                            created_tags.add(t)
+                        except Exception:
+                            allowed.add(t)
+                    else:
+                        created_tags.add(t)
+
+            if not dry_run:
+                payload = {"tags": new_tags}
+                encoded = {k: codec.encode_field(k, v) for k, v in payload.items()}
+                db.update_row("cleanlight_canvas", "id", rid, encoded)
+
+            decoded_counts["rows_changed"] += 1
+            changed.append({"id": rid, "from": tags, "to": new_tags})
+
+    return jsonify({
+        "dry_run": dry_run,
+        "examined_rows": examined,
+        "rows_changed": decoded_counts["rows_changed"],
+        "decoded_items": decoded_counts["items_decoded"],
+        "new_tags_created": sorted(created_tags),
+        "samples": changed[:10]
+    })

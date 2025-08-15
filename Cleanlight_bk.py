@@ -12,7 +12,9 @@ import time
 
 app = Flask(__name__)
 
-def _decode_record(record: dict):
+def _decode_record(record):
+    if isinstance(record, list):
+        return [{k: codec.decode_field(k, v) for k, v in r.items()} for r in record]
     return {k: codec.decode_field(k, v) for k, v in record.items()}
 
 def _mir_snapshot(limit=5):
@@ -142,8 +144,13 @@ def command():
         except RuntimeError as e:
             return _err("Update failed", 500, echo=echo, hint=str(e))
 
-        return jsonify(_wrap(_decode_record(updated), echo=echo))
+        if isinstance(updated, list):
+            decoded = [_decode_record(r) for r in updated]
+        else:
+            decoded = _decode_record(updated)
 
+        return jsonify(_wrap(decoded, echo=echo))
+        
     if action == "delete":
         if not rid:
             return _err("Missing rid", echo=echo)
@@ -155,6 +162,7 @@ def command():
         return jsonify(_wrap({"status": "deleted"}, echo=echo))
 
     return _err("Unknown action", echo=echo)
+
 
 
 

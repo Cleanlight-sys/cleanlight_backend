@@ -4,6 +4,7 @@ import os
 import requests
 from datetime import datetime
 
+
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -67,8 +68,8 @@ def insert_row(table: str, payload: dict):
     return data[0] if isinstance(data, list) and data else data
 
 def update_row(table: str, key_col: str, rid, payload: dict):
-    # ✅ Inject updated_at just before the mutation
-    payload["updated_at"] = datetime.utcnow().isoformat()
+    # ✅ Set fresh UTC timestamp
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     r = requests.patch(
         f"{SUPABASE_URL}/rest/v1/{table}?{key_col}=eq.{rid}",
@@ -90,5 +91,6 @@ def delete_row(table: str, key_col: str, rid):
     except requests.exceptions.HTTPError as e:
         raise RuntimeError(f"Supabase delete failed: {r.status_code} → {r.text}") from e
     return True
+
 
 

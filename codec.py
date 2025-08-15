@@ -86,6 +86,15 @@ def looks_like_baseN(s: str, alphabets=(BASE1K, LEGACY_BASE1K, BASE10K, LEGACY_B
     return False
 
 # ---------- Field-aware encoding (multi-image) ----------
+_PASS_THROUGH = {
+    # system/plain fields
+    "id", "cognition", "tag", "description", "created_by",
+    # timestamptz fields
+    "created_at", "updated_at", "archived_at",
+    # arrays
+    "tags",
+}
+
 def _encode_image_item(b64_str: str) -> str:
     raw = base64.b64decode(b64_str)
     return encode_smart10k(raw)
@@ -95,20 +104,24 @@ def _decode_image_item(s10k_str: str) -> str:
     return base64.b64encode(raw).decode("ascii")
 
 def encode_field(field: str, value):
-    # Skip encoding for system and plain-text fields in tag table
-    if field in ("cognition", "created_at", "tag", "description", "created_by"):
+    # Never encode pass-through fields
+    if field in _PASS_THROUGH:
         return value
+
+    # Images: list or single b64 string → smart10k list
     if field == "images":
         if value is None:
             return None
         if isinstance(value, list):
             return [_encode_image_item(v) for v in value]
         return [_encode_image_item(value)]
+
+    # Default: compress strings; stringify other scalars first
     return encode_smart1k(value if isinstance(value, str) else str(value))
 
 def decode_field(field: str, value):
-    # Never decode system or plaintext fields
-    if field in ("cognition", "created_at", "tag", "description", "created_by"):
+    # Never decode pass-through fields
+    if field in _PASS_THROUGH:
         return value
 
     # Decode image(s) if present
@@ -117,18 +130,22 @@ def decode_field(field: str, value):
         if isinstance(value, list):
             out = []
             for v in value:
-                try: out.append(_decode_image_item(v))
-                except Exception: out.append(v)
+                try:
+                    out.append(_decode_image_item(v))
+                except Exception:
+                    out.append(v)
             return out
-        try: return [_decode_image_item(value)]
-        except Exception: return [value]
+        try:
+            return [_decode_image_item(value)]
+        except Exception:
+            return [value]
 
     # Decode smart1k if it looks like baseN
     if isinstance(value, str) and looks_like_baseN(value):
-        try: return decode_smart1k(value)
-        except Exception: return value
+        try:
+            return decode_smart1k(value)
+        except Exception:
+            return value
 
     # Return as-is otherwise
     return value
-
-

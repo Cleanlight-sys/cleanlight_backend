@@ -150,6 +150,49 @@ def command():
             decoded = _decode_record(updated)
 
         return jsonify(_wrap(decoded, echo=echo))
+         # ---------- APPEND MODE ----------
+    if action == "append_fields":
+        if not rid:
+            return _err("Missing rid", echo=echo)
+
+        original = db.read_row(table, key_col, rid)
+        if not original:
+            return _err("Record not found", 404, echo=echo)
+
+        updated = original.copy()
+        value = _normalize_images(value)
+
+        timestamp = datetime.utcnow().isoformat()
+
+        for field, new_val in value.items():
+            old_val = original.get(field)
+
+            if field == "tags":
+                old_tags = old_val if isinstance(old_val, list) else []
+                new_tags = new_val if isinstance(new_val, list) else [new_val]
+                updated[field] = list(sorted(set(old_tags + new_tags)))
+
+            elif field == "mir":
+                prefix = f"[{timestamp}] "
+                updated[field] = f"{old_val.strip()}\n{prefix}{new_val.strip()}"
+
+            elif field == "insight":
+                updated[field] = f"{old_val.strip()}\n---\n{new_val.strip()}"
+
+            elif field == "cognition":
+                updated[field] = f"{old_val.strip()}\n## APPENDED {timestamp}\n{new_val.strip()}"
+
+            else:
+                # fallback: overwrite (optional — or reject unlisted fields)
+                updated[field] = new_val
+
+        encoded = {k: codec.encode_field(k, v) for k, v in updated.items()}
+        try:
+            updated_row = db.update_row(table, key_col, rid, encoded)
+        except RuntimeError as e:
+            return _err("Append failed", 500, echo=echo, hint=str(e))
+
+        return jsonify(_wrap(_decode_record(updated_row), echo=echo))
         
     if action == "delete":
         if not rid:
@@ -162,6 +205,7 @@ def command():
         return jsonify(_wrap({"status": "deleted"}, echo=echo))
 
     return _err("Unknown action", echo=echo)
+
 
 
 

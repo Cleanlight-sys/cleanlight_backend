@@ -2,7 +2,7 @@
 
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -91,6 +91,7 @@ def delete_row(table: str, key_col: str, rid):
     except requests.exceptions.HTTPError as e:
         raise RuntimeError(f"Supabase delete failed: {r.status_code} → {r.text}") from e
     return True
+
 
 
 

@@ -129,7 +129,17 @@ def command():
     if action in ("update", "patch"):
         if not rid:
             return _err("Missing rid", echo=echo)
+
         value = _normalize_images(value)
+
+        # ========== ARCHIVAL CONTROL ==========
+        if body.get("archive") is True:
+            value["archived_at"] = datetime.utcnow().isoformat()
+        elif body.get("unarchive") is True:
+            value["archived_at"] = None
+        elif "archived_at" in value:
+            del value["archived_at"]  # Prevent raw overwrite
+
         try:
             if table == "cleanlight_canvas":
                 laws.enforce_canvas_laws(value, system_delta=body.get("system_delta", False))
@@ -144,13 +154,10 @@ def command():
         except RuntimeError as e:
             return _err("Update failed", 500, echo=echo, hint=str(e))
 
-        if isinstance(updated, list):
-            decoded = [_decode_record(r) for r in updated]
-        else:
-            decoded = _decode_record(updated)
-
+        decoded = _decode_record(updated)
         return jsonify(_wrap(decoded, echo=echo))
-         # ---------- APPEND MODE ----------
+
+    # ---------- APPEND MODE ----------
     if action == "append_fields":
         if not rid:
             return _err("Missing rid", echo=echo)
@@ -183,8 +190,18 @@ def command():
                 updated[field] = f"{old_val.strip()}\n## APPENDED {timestamp}\n{new_val.strip()}"
 
             else:
-                # fallback: overwrite (optional — or reject unlisted fields)
-                updated[field] = new_val
+                updated[field] = new_val  # fallback overwrite
+
+        # ========== ARCHIVAL CONTROL ==========
+        if body.get("archive") is True:
+            updated["archived_at"] = timestamp
+        elif body.get("unarchive") is True:
+            updated["archived_at"] = None
+        elif "archived_at" in value:
+            del updated["archived_at"]
+
+        # ========== TOUCH TOKEN ==========
+        updated["_touch"] = timestamp  # Ensures updated_at mutation
 
         encoded = {k: codec.encode_field(k, v) for k, v in updated.items()}
         try:
@@ -193,7 +210,7 @@ def command():
             return _err("Append failed", 500, echo=echo, hint=str(e))
 
         return jsonify(_wrap(_decode_record(updated_row), echo=echo))
-        
+
     if action == "delete":
         if not rid:
             return _err("Missing rid", echo=echo)
@@ -205,8 +222,3 @@ def command():
         return jsonify(_wrap({"status": "deleted"}, echo=echo))
 
     return _err("Unknown action", echo=echo)
-
-
-
-
-

@@ -59,6 +59,12 @@ def read_column(table: str, key_col: str, field: str):
 
 # ---------- WRITES ----------
 def insert_row(table: str, payload: dict):
+    # For canvas, ensure server-side defaults if caller didn’t provide them
+    if table == "cleanlight_canvas":
+        now = datetime.now(timezone.utc).isoformat()
+        payload.setdefault("created_at", now)
+        payload.setdefault("updated_at", now)
+
     r = requests.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=HEADERS, json=payload)
     try:
         r.raise_for_status()
@@ -68,7 +74,7 @@ def insert_row(table: str, payload: dict):
     return data[0] if isinstance(data, list) and data else data
 
 def update_row(table: str, key_col: str, rid, payload: dict):
-    # ✅ Set fresh UTC timestamp
+    # ✅ Always set fresh UTC timestamp in-DB, unencoded
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     r = requests.patch(
@@ -84,6 +90,7 @@ def update_row(table: str, key_col: str, rid, payload: dict):
 
     data = r.json()
     return data[0] if isinstance(data, list) and data else data
+
 def delete_row(table: str, key_col: str, rid):
     r = requests.delete(f"{SUPABASE_URL}/rest/v1/{table}?{key_col}=eq.{rid}", headers=HEADERS)
     try:
@@ -91,7 +98,3 @@ def delete_row(table: str, key_col: str, rid):
     except requests.exceptions.HTTPError as e:
         raise RuntimeError(f"Supabase delete failed: {r.status_code} → {r.text}") from e
     return True
-
-
-
-

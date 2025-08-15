@@ -157,7 +157,7 @@ def command():
         decoded = _decode_record(updated)
         return jsonify(_wrap(decoded, echo=echo))
 
-    # ---------- APPEND MODE ----------
+   # ---------- APPEND MODE ----------
     if action == "append_fields":
         if not rid:
             return _err("Missing rid", echo=echo)
@@ -200,9 +200,6 @@ def command():
         elif "archived_at" in value:
             del updated["archived_at"]
 
-        # ========== TOUCH TOKEN ==========
-        updated["_touch"] = timestamp  # Ensures updated_at mutation
-
         encoded = {k: codec.encode_field(k, v) for k, v in updated.items()}
         try:
             updated_row = db.update_row(table, key_col, rid, encoded)
@@ -210,7 +207,7 @@ def command():
             return _err("Append failed", 500, echo=echo, hint=str(e))
 
         return jsonify(_wrap(_decode_record(updated_row), echo=echo))
-
+    
     if action == "delete":
         if not rid:
             return _err("Missing rid", echo=echo)
@@ -222,3 +219,4 @@ def command():
         return jsonify(_wrap({"status": "deleted"}, echo=echo))
 
     return _err("Unknown action", echo=echo)
+

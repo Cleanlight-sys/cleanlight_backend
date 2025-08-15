@@ -88,7 +88,6 @@ def _enforce_fact_reason_separation(codex, mir: str, insight: str):
     if any(t in codex_text.lower() for t in reason_terms):
         raise CleanlightLawError("Codex contains reasoning language.",
                                  hint="Move reasoning words into the 'insight' field.")
-    # NOTE: factual checks for insight removed — now governed by depth/structure rules
 
 def _enforce_reference(reference: str, insight: str):
     if reference and _compressed_size_bytes(reference) > 5*1024:

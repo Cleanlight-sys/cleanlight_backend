@@ -2,7 +2,7 @@
 # Run: gunicorn -w 2 -b 0.0.0.0:8000 Cleanlight_bk:app
 
 from flask import Flask, request, jsonify, Response, stream_with_context
-from datetime import datetime
+from datetime import datetime, timezone
 import db
 import laws
 import codec
@@ -169,7 +169,7 @@ def command():
         updated = original.copy()
         value = _normalize_images(value)
 
-        timestamp = datetime.utcnow().isoformat()
+        timestamp = datetime.now(timezone.utc).isoformat()
 
         for field, new_val in value.items():
             old_val = original.get(field)
@@ -219,4 +219,5 @@ def command():
         return jsonify(_wrap({"status": "deleted"}, echo=echo))
 
     return _err("Unknown action", echo=echo)
+
 

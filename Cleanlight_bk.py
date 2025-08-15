@@ -8,7 +8,6 @@ import laws
 import codec
 from laws import CleanlightLawError
 import json
-import time
 
 app = Flask(__name__)
 
@@ -38,7 +37,7 @@ def _err(msg, code=400, echo=None, hint=None):
 @app.get("/health")
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
-    
+
 DEFAULT_SELECTS = {
     "cleanlight_canvas": "*",
     "cleanlight_tags": "tag,description,created_by,created_at"
@@ -57,8 +56,7 @@ def command():
     field   = body.get("field")
     rid     = body.get("rid")
     ids     = body.get("ids")
-    value   = body.get("value") or body.get("payload") or body.get("fields")
-    where   = body.get("where", {})
+    value   = body.get("value") or body.get("payload") or body.get("fields") or {}
     select  = body.get("select") or DEFAULT_SELECTS.get(table, "*")
     key_col = body.get("key_col") or DEFAULT_KEYS.get(table, "id")
     echo    = body.get("echo")
@@ -108,6 +106,10 @@ def command():
         value = _normalize_images(value)
         try:
             if table == "cleanlight_canvas":
+                # Ensure both timestamps exist; codec skips these fields
+                now = datetime.utcnow().isoformat()
+                value.setdefault("created_at", now)
+                value.setdefault("updated_at", now)
                 laws.enforce_canvas_laws(value, system_delta=body.get("system_delta", False))
             elif table == "cleanlight_tags":
                 if "created_at" not in value:
@@ -157,14 +159,16 @@ def command():
         decoded = _decode_record(updated)
         return jsonify(_wrap(decoded, echo=echo))
 
-   # ---------- APPEND MODE ----------
+    # ---------- APPEND MODE ----------
     if action == "append_fields":
         if not rid:
             return _err("Missing rid", echo=echo)
 
-        original = db.read_row(table, key_col, rid)
-        if not original:
+        # Read + DECODE the original to avoid double-encoding on write
+        original_raw = db.read_row(table, key_col, rid)
+        if not original_raw:
             return _err("Record not found", 404, echo=echo)
+        original = _decode_record(original_raw)
 
         updated = original.copy()
         value = _normalize_images(value)
@@ -180,34 +184,42 @@ def command():
                 updated[field] = list(sorted(set(old_tags + new_tags)))
 
             elif field == "mir":
-                prefix = f"[{timestamp}] "
-                updated[field] = f"{old_val.strip()}\n{prefix}{new_val.strip()}"
+                old = (old_val or "").strip()
+                pre = f"[{timestamp}] "
+                updated[field] = f"{old}\n{pre}{(new_val or '').strip()}" if old else f"{pre}{(new_val or '').strip()}"
 
             elif field == "insight":
-                updated[field] = f"{old_val.strip()}\n---\n{new_val.strip()}"
+                old = (old_val or "").strip()
+                sep = "\n---\n" if old else ""
+                updated[field] = f"{old}{sep}{(new_val or '').strip()}"
 
             elif field == "cognition":
-                updated[field] = f"{old_val.strip()}\n## APPENDED {timestamp}\n{new_val.strip()}"
+                old = (old_val or "").strip()
+                header = f"## APPENDED {timestamp}\n"
+                updated[field] = f"{old}\n{header}{(new_val or '').strip()}" if old else f"{header}{(new_val or '').strip()}"
 
             else:
-                updated[field] = new_val  # fallback overwrite
+                # Fallback overwrite for scalar fields (including explicitly setting updated_at if caller insists)
+                updated[field] = new_val
 
-        # ========== ARCHIVAL CONTROL ==========
+        # Archival controls (preserved from update route)
         if body.get("archive") is True:
             updated["archived_at"] = timestamp
         elif body.get("unarchive") is True:
             updated["archived_at"] = None
         elif "archived_at" in value:
-            del updated["archived_at"]
+            updated.pop("archived_at", None)
 
+        # Encode AFTER merge (prevents double-encoding) — timestamps/tags pass through
         encoded = {k: codec.encode_field(k, v) for k, v in updated.items()}
+
         try:
             updated_row = db.update_row(table, key_col, rid, encoded)
         except RuntimeError as e:
             return _err("Append failed", 500, echo=echo, hint=str(e))
 
         return jsonify(_wrap(_decode_record(updated_row), echo=echo))
-    
+
     if action == "delete":
         if not rid:
             return _err("Missing rid", echo=echo)
@@ -219,5 +231,3 @@ def command():
         return jsonify(_wrap({"status": "deleted"}, echo=echo))
 
     return _err("Unknown action", echo=echo)
-
-

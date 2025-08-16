@@ -4,7 +4,6 @@ import os
 import requests
 from datetime import datetime, timezone
 
-
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 if not SUPABASE_URL or not SUPABASE_KEY:
@@ -17,17 +16,21 @@ HEADERS = {
     "Prefer": "return=representation"
 }
 
+def _url(table: str, select: str, limit: int, order: str | None = None):
+    url = f"{SUPABASE_URL}/rest/v1/{table}?select={select}&limit={limit}"
+    if order:
+        url += f"&order={order}"
+    return url
+
 # ---------- BASIC GETTERS ----------
-def read_table(table: str, select="*", limit=1000):
-    r = requests.get(
-        f"{SUPABASE_URL}/rest/v1/{table}?select={select}&limit={limit}",
-        headers=HEADERS
-    )
+def read_table(table: str, select="*", limit=1000, order: str | None = None):
+    r = requests.get(_url(table, select, limit, order), headers=HEADERS)
     r.raise_for_status()
     return r.json()
 
 def read_all_rows(table: str, select="*"):
-    return read_table(table, select=select, limit=10000)
+    # Return in deterministic order to prevent “phantom” gaps
+    return read_table(table, select=select, limit=10000, order="id.asc")
 
 def read_row(table: str, key_col: str, rid, select="*"):
     r = requests.get(
@@ -54,12 +57,12 @@ def read_cell(table: str, key_col: str, rid, field: str):
     return row.get(field) if row else None
 
 def read_column(table: str, key_col: str, field: str):
-    rows = read_table(table, select=f"{key_col},{field}")
+    rows = read_table(table, select=f"{key_col},{field}", order=f"{key_col}.asc")
     return [{key_col: r[key_col], "value": r[field]} for r in rows if field in r]
 
 # ---------- WRITES ----------
 def insert_row(table: str, payload: dict):
-    # For canvas, ensure server-side defaults if caller didn’t provide them
+    # Server-side default timestamps for canvas
     if table == "cleanlight_canvas":
         now = datetime.now(timezone.utc).isoformat()
         payload.setdefault("created_at", now)
@@ -74,20 +77,17 @@ def insert_row(table: str, payload: dict):
     return data[0] if isinstance(data, list) and data else data
 
 def update_row(table: str, key_col: str, rid, payload: dict):
-    # ✅ Always set fresh UTC timestamp in-DB, unencoded
+    # Always bump updated_at in-DB (plain ISO)
     payload["updated_at"] = datetime.now(timezone.utc).isoformat()
-
     r = requests.patch(
         f"{SUPABASE_URL}/rest/v1/{table}?{key_col}=eq.{rid}",
         headers=HEADERS,
         json=payload
     )
-
     try:
         r.raise_for_status()
     except requests.exceptions.HTTPError as e:
         raise RuntimeError(f"Supabase update failed: {r.status_code} → {r.text}") from e
-
     data = r.json()
     return data[0] if isinstance(data, list) and data else data
 

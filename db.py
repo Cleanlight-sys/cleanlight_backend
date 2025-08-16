@@ -60,6 +60,14 @@ def read_column(table: str, key_col: str, field: str):
     rows = read_table(table, select=f"{key_col},{field}", order=f"{key_col}.asc")
     return [{key_col: r[key_col], "value": r[field]} for r in rows if field in r]
 
+def scan_rows(table: str, start_id: int = 0, limit: int = 100, select: str = "*", skip_archived: bool = True):
+    base = f"{SUPABASE_URL}/rest/v1/{table}?id=gt.{start_id}&select={select}&order=id.asc&limit={limit}"
+    if skip_archived:
+        base += "&archived_at=is.null"
+    r = requests.get(base, headers=HEADERS)
+    r.raise_for_status()
+    return r.json()
+
 # ---------- WRITES ----------
 def insert_row(table: str, payload: dict):
     # Server-side default timestamps for canvas
@@ -98,3 +106,4 @@ def delete_row(table: str, key_col: str, rid):
     except requests.exceptions.HTTPError as e:
         raise RuntimeError(f"Supabase delete failed: {r.status_code} → {r.text}") from e
     return True
+

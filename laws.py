@@ -20,6 +20,17 @@ def get_allowed_tags():
     rows = read_column("cleanlight_tags", "tag", "tag")
     return [r["value"] for r in rows if "value" in r]
 
+def _block_overwrite_of_append_only(payload: dict) -> None:
+    for f in ("mir", "insight"):
+        if f in payload and payload[f] is not None:
+            raise CleanlightLawError(
+                f"{f} is append-only.",
+                hint="Call action='append_fields' with {f} instead of update.",
+                law="Canvas:AppendOnly",
+                field=f,
+                code="USE_APPEND_FIELDS"
+            )
+
 # ===== Canvas =====
 def enforce_canvas_laws(payload: dict, system_delta: bool = False, mode: str = "insert") -> None:
     """
@@ -66,7 +77,25 @@ def enforce_canvas_laws(payload: dict, system_delta: bool = False, mode: str = "
 
     if images is not None:
         _enforce_images(images)
+     # --- Mode-sensitive protections ---
+    
+    if mode in ("update", "patch"):
+        _block_overwrite_of_append_only(payload)  # MIR / insight must use append_fields
+        # Codex immutable unless system-intent codex_delta
+        if "codex" in payload and payload["codex"] is not None:
+            if not system_delta or not bool(payload.get("codex_delta", False)):
+                raise CleanlightLawError(
+                    "Codex is immutable on update.",
+                    hint="Use 'append_fields' for insight/mir. For codex replacement, include system_delta=true and codex_delta=true.",
+                    law="Canvas:Codex",
+                    field="codex",
+                    code="CODEX_IMMUTABLE"
+                )
 
+    if mode == "append":
+        # Appends are fine; still ensure images/tags/etc obey format rules
+        pass
+        
 def _enforce_canonical_tags(tags):
     if tags is None: return
     if not isinstance(tags, list):
@@ -202,3 +231,4 @@ def enforce_tag_laws(payload: dict, action: str, allow_delete: bool = False) -> 
                                  law="Tags", field="created_by", code="TAG_CREATOR")
     if not payload.get("created_at"):
         payload["created_at"] = datetime.utcnow().isoformat()
+

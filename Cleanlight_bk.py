@@ -7,19 +7,54 @@ import db
 import laws
 import codec
 from laws import CleanlightLawError
-import json
+import time, sys, json as _json
+
 
 app = Flask(__name__)
 
 def _now_z():
     return datetime.now(timezone.utc).isoformat()
-    
+
+@app.before_request
+def _log_start():
+    request._t0 = time.time()
+
 # -------- no-store on every response to avoid “phantom” reads --------
 @app.after_request
+def _log_request(resp):
+    try:
+        dur_ms = int((time.time() - getattr(request, "_t0", time.time())) * 1000)
+        rec = {
+            "path": request.path,
+            "method": request.method,
+            "status": resp.status_code,
+            "dur_ms": dur_ms,
+        }
+        # include common body fields when JSON
+        try:
+            body = request.get_json(silent=True) or {}
+            for k in ("action","table","rid"):
+                if k in body: rec[k] = body[k]
+        except Exception:
+            pass
+        print(_json.dumps(rec), file=sys.stdout, flush=True)
+    except Exception:
+        pass
+    # keep existing no-store headers
+    return resp
+
 def add_no_store(resp):
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     resp.headers["Pragma"] = "no-cache"
     return resp
+
+def scan_rows(table: str, start_id: int = 0, limit: int = 100, select: str = "*", skip_archived: bool = True):
+    base = f"{SUPABASE_URL}/rest/v1/{table}?id=gt.{start_id}&select={select}&order=id.asc&limit={limit}"
+    if skip_archived:
+        base += "&archived_at=is.null"
+    r = requests.get(base, headers=HEADERS)
+    r.raise_for_status()
+    return r.json()
 
 def _decode_record(record):
     if isinstance(record, list):
@@ -90,8 +125,18 @@ def command_delete():
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
-
+    try:
+        last = db.read_table("cleanlight_canvas", select="id,updated_at", limit=1, order="id.desc")
+        last_row = last[0] if last else {}
+        return jsonify({
+            "status": "ok",
+            "time": _now_z(),
+            "last_id": last_row.get("id"),
+            "last_updated_at": last_row.get("updated_at"),
+        })
+    except Exception as e:
+        return jsonify({"status": "degraded", "time": _now_z(), "error": str(e)}), 200
+        
 DEFAULT_SELECTS = {
     "cleanlight_canvas": "*",
     "cleanlight_tags": "tag,description,created_by,created_at"
@@ -217,6 +262,13 @@ def command():
         if not rid:
             return _err("Missing rid", echo=echo, error={"code":"RID_REQUIRED"})
         value = _normalize_images(value)
+        
+        # Guard: append-only fields must not be overwritten via update
+        if any(k in value for k in ("mir","insight")):
+            return _err("Append-only field.",
+                        echo=echo,
+                        hint="Use action='append_fields' for mir/insight.",
+                        error={"code":"USE_APPEND_FIELDS","field":"mir|insight"})
 
         # archival controls
         if body.get("archive") is True:
@@ -329,6 +381,30 @@ def command():
         )
 
     return _err("Unknown action", echo=echo, error={"code":"UNKNOWN_ACTION"})
+
+@app.post("/command/scan")
+def command_scan():
+    body = request.get_json(force=True) or {}
+    table   = body.get("table") or "cleanlight_canvas"
+    start_id= int(body.get("start_id") or 0)
+    limit   = int(body.get("limit") or 100)
+    select  = body.get("select") or "id,tags,updated_at"
+    echo    = body.get("echo")
+
+    # reuse aliasing checks
+    table = TABLE_ALIASES.get(table, table)
+    if table not in DEFAULT_KEYS:
+        return _err("Unknown or unsupported table.",
+                    echo=echo,
+                    hint=f"Use one of: {', '.join(DEFAULT_KEYS.keys())}",
+                    error={"law":"Router","field":"table","code":"UNKNOWN_TABLE","table":table})
+
+    try:
+        rows = db.scan_rows(table, start_id=start_id, limit=limit, select=select, skip_archived=True)
+        next_id = rows[-1]["id"] if rows else start_id
+        return jsonify(_wrap({"rows":[_decode_record(r) for r in rows], "next_start_id": next_id}, echo=echo))
+    except RuntimeError as e:
+        return _err("Scan failed", 500, echo=echo, hint=str(e), error={"code":"SCAN_FAIL"})
 
 # ----- Admin migration (robust) -----
 @app.post("/admin/migrate_encoded_tags")
@@ -498,6 +574,7 @@ def migrate_encoded_tags():
         "new_tags_created": sorted(created_tags),
         "samples": changed[:10]
     })
+
 
 
 

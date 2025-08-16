@@ -3,6 +3,7 @@
 import base64
 import zlib
 import zstandard as zstd
+import re
 
 # ---------- Alphabets ----------
 def _is_nonchar(cp): return (0xFDD0 <= cp <= 0xFDEF) or (cp & 0xFFFE) == 0xFFFE
@@ -80,23 +81,44 @@ def decode_smart10k(s: str) -> bytes:
 
 # ---------- Heuristics ----------
 def looks_like_baseN(s: str, alphabets=(BASE1K, LEGACY_BASE1K, BASE10K, LEGACY_BASE10K)) -> bool:
-    if not isinstance(s, str) or len(s) < 16: return False
-    for alph in alphabets:
-        if all(ch in alph for ch in s): return True
-    return False
+    if not isinstance(s, str) or len(s) < 8:
+        return False
+    return all(ch in alphabets[0] or ch in alphabets[1] or ch in alphabets[2] or ch in alphabets[3] for ch in s)
 
 # ---------- Field-aware encoding (multi-image) ----------
 _PASS_THROUGH = {
-    # system/plain fields
     "id", "cognition", "tag", "description", "created_by",
-    # timestamptz fields
     "created_at", "updated_at", "archived_at",
-    # arrays
     "tags",
 }
 
-def _encode_image_item(b64_str: str) -> str:
-    raw = base64.b64decode(b64_str)
+_DATA_URI_RE = re.compile(r"^data:.*?;base64,", re.IGNORECASE)
+
+def _normalize_b64(s: str) -> str:
+    if not isinstance(s, str):
+        raise ValueError("Image item must be string")
+    # Strip data URI prefix if present
+    s = _DATA_URI_RE.sub("", s)
+    # Remove whitespace/newlines
+    s = re.sub(r"\s+", "", s)
+    # URL-safe → standard
+    s = s.replace("-", "+").replace("_", "/")
+    # Pad to multiple of 4
+    pad = (4 - (len(s) % 4)) % 4
+    if pad:
+        s += "=" * pad
+    return s
+
+def _encode_image_item(s: str) -> str:
+    # If it's already smart10k-ish and decompressible, keep as-is
+    if looks_like_baseN(s):
+        try:
+            decode_smart10k(s)
+            return s
+        except Exception:
+            pass
+    # Otherwise treat as base64 (normalize & accept URL-safe form)
+    raw = base64.b64decode(_normalize_b64(s), validate=False)
     return encode_smart10k(raw)
 
 def _decode_image_item(s10k_str: str) -> str:
@@ -104,11 +126,9 @@ def _decode_image_item(s10k_str: str) -> str:
     return base64.b64encode(raw).decode("ascii")
 
 def encode_field(field: str, value):
-    # Never encode pass-through fields
     if field in _PASS_THROUGH:
         return value
 
-    # Images: list or single b64 string → smart10k list
     if field == "images":
         if value is None:
             return None
@@ -116,15 +136,12 @@ def encode_field(field: str, value):
             return [_encode_image_item(v) for v in value]
         return [_encode_image_item(value)]
 
-    # Default: compress strings; stringify other scalars first
     return encode_smart1k(value if isinstance(value, str) else str(value))
 
 def decode_field(field: str, value):
-    # Never decode pass-through fields
     if field in _PASS_THROUGH:
         return value
 
-    # Decode image(s) if present
     if field == "images":
         if value is None: return None
         if isinstance(value, list):
@@ -140,12 +157,10 @@ def decode_field(field: str, value):
         except Exception:
             return [value]
 
-    # Decode smart1k if it looks like baseN
     if isinstance(value, str) and looks_like_baseN(value):
         try:
             return decode_smart1k(value)
         except Exception:
             return value
 
-    # Return as-is otherwise
     return value

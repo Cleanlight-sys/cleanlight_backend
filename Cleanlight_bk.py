@@ -11,6 +11,9 @@ import json
 
 app = Flask(__name__)
 
+def _now_z():
+    return datetime.now(timezone.utc).isoformat()
+    
 # -------- no-store on every response to avoid “phantom” reads --------
 @app.after_request
 def add_no_store(resp):
@@ -183,8 +186,25 @@ def command():
                 laws.enforce_tag_laws(value, action="insert")
         except CleanlightLawError as e:
             return _err(str(e), 400, echo=echo, hint=e.hint, error={"law":e.law,"field":e.field,"code":e.code})
+            
+        if table == "cleanlight_canvas" and isinstance(value.get("codex"), (dict, str)):
+            try:
+                obj = value["codex"]
+                if isinstance(obj, str):
+                    import json as _j
+                    obj = _j.loads(obj)  # best-effort; if it fails we still accept raw string
+                ok, hints = codec.validate_graph_bundle(obj)
+                if hints:
+                    # push a MIR hint without blocking
+                    stamp = datetime.utcnow().isoformat()+"Z"
+                    pre = (value.get("mir") or "").strip()
+                    hint_txt = f"[{stamp}] codex.validate: " + "; ".join(hints)
+                    value["mir"] = (pre + "\n" + hint_txt).strip() if pre else hint_txt
+            except Exception:
+                pass  # never block
 
         encoded = {k: codec.encode_field(k, v) for k, v in value.items()}
+        
         try:
             inserted = db.insert_row(table, encoded)
         except RuntimeError as e:
@@ -205,6 +225,9 @@ def command():
             value["archived_at"] = None
         elif "archived_at" in value:
             del value["archived_at"]
+            
+        if table == "cleanlight_canvas":
+            value["updated_at"] = datetime.utcnow().isoformat()  # or _now_z()    
 
         try:
             if table == "cleanlight_canvas":
@@ -262,6 +285,9 @@ def command():
             updated["archived_at"] = None
         elif "archived_at" in value:
             updated.pop("archived_at", None)
+
+        if table == "cleanlight_canvas":
+            updated["updated_at"] = timestamp
 
         # Re-validate only the pieces we touched
         try:
@@ -457,4 +483,5 @@ def migrate_encoded_tags():
         "new_tags_created": sorted(created_tags),
         "samples": changed[:10]
     })
+
 

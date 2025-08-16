@@ -237,7 +237,23 @@ def command():
         except CleanlightLawError as e:
             return _err(str(e), 400, echo=echo, hint=e.hint, error={"law":e.law,"field":e.field,"code":e.code})
 
+        if table == "cleanlight_canvas" and isinstance(value.get("codex"), (dict, str)):
+            try:
+                obj = value["codex"]
+                if isinstance(obj, str):
+                    import json as _j
+                    obj = _j.loads(obj)
+                ok, hints = codec.validate_graph_bundle(obj)
+                if hints:
+                    stamp = datetime.utcnow().isoformat()+"Z"
+                    pre = (value.get("mir") or "").strip()
+                    hint_txt = f"[{stamp}] codex.validate: " + "; ".join(hints)
+                    value["mir"] = (pre + "\n" + hint_txt).strip() if pre else hint_txt
+            except Exception:
+                pass
+                
         encoded = {k: codec.encode_field(k, v) for k, v in value.items()}
+        
         try:
             updated = db.update_row(table, key_col, rid, encoded)
         except RuntimeError as e:
@@ -305,13 +321,12 @@ def command():
         return jsonify(_wrap(_decode_record(updated_row), echo=echo))
 
     if action == "delete":
-        if not rid:
-            return _err("Missing rid", echo=echo, error={"code":"RID_REQUIRED"})
-        try:
-            db.delete_row(table, key_col, rid)
-        except RuntimeError as e:
-            return _err("Delete failed", 500, echo=echo, hint=str(e), error={"code":"DELETE_FAIL"})
-        return jsonify(_wrap({"status": "deleted"}, echo=echo))
+        return _err(
+            "Delete not allowed via /command.",
+            echo=echo,
+            hint="Use POST /command/delete { table, rid }",
+            error={"code":"DELETE_REDIRECT","law":"Router"}
+        )
 
     return _err("Unknown action", echo=echo, error={"code":"UNKNOWN_ACTION"})
 
@@ -483,5 +498,6 @@ def migrate_encoded_tags():
         "new_tags_created": sorted(created_tags),
         "samples": changed[:10]
     })
+
 
 

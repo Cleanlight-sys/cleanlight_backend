@@ -43,6 +43,48 @@ def _wrap(data, echo=None, hint=None, error=None):
 def _err(msg, code=400, echo=None, hint=None, error=None):
     return jsonify(_wrap(None, echo=echo, hint=hint or msg, error=error)), code
 
+@app.post("/command/delete")
+def command_delete():
+    """
+    Consequential delete-only alias.
+    Body: { "table": "...", "rid": <int>, "key_col": "id" }
+    """
+    body = request.get_json(force=True) or {}
+    table   = body.get("table")
+    rid     = body.get("rid")
+    key_col = body.get("key_col")
+
+    # Reuse the same table aliasing/guards as /command
+    TABLE_ALIASES = {
+        "codex": "cleanlight_canvas",
+        "graph_bundle": "cleanlight_canvas",
+        "graph.bundle": "cleanlight_canvas",
+    }
+    DEFAULT_KEYS = {
+        "cleanlight_canvas": "id",
+        "cleanlight_tags": "tag"
+    }
+
+    echo = body.get("echo")
+    if not table:
+        return _err("Missing table.", echo=echo, error={"code":"TABLE_REQUIRED"})
+    table = TABLE_ALIASES.get(table, table)
+    if table not in DEFAULT_KEYS:
+        return _err("Unknown or unsupported table.",
+                    echo=echo,
+                    hint=f"Use one of: {', '.join(DEFAULT_KEYS.keys())}",
+                    error={"law":"Router","field":"table","code":"UNKNOWN_TABLE","table":table})
+
+    if rid is None:
+        return _err("Missing rid.", echo=echo, error={"code":"RID_REQUIRED"})
+    key_col = key_col or DEFAULT_KEYS.get(table, "id")
+
+    try:
+        db.delete_row(table, key_col, rid)
+    except RuntimeError as e:
+        return _err("Delete failed", 500, echo=echo, hint=str(e), error={"code":"DELETE_FAIL"})
+    return jsonify(_wrap({"status": "deleted", "table": table, "rid": rid}, echo=echo))
+
 @app.get("/health")
 def health():
     return jsonify({"status": "ok", "time": datetime.utcnow().isoformat()})
@@ -415,3 +457,4 @@ def migrate_encoded_tags():
         "new_tags_created": sorted(created_tags),
         "samples": changed[:10]
     })
+

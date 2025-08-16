@@ -7,6 +7,7 @@ import db
 import laws
 import codec
 from laws import CleanlightLawError
+import json 
 import time, sys, json as _json
 
 
@@ -574,6 +575,7 @@ def migrate_encoded_tags():
         "new_tags_created": sorted(created_tags),
         "samples": changed[:10]
     })
+
 
 
 

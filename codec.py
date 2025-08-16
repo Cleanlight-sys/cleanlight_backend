@@ -164,3 +164,24 @@ def decode_field(field: str, value):
             return value
 
     return value
+    
+def validate_graph_bundle(obj) -> tuple[bool, list[str]]:
+    hints = []
+    try:
+        if not isinstance(obj, dict):
+            return False, ["codex must be JSON object or stringified JSON"]
+        if obj.get("ctype") != "graph.bundle":
+            hints.append("ctype != graph.bundle")
+        if obj.get("schema") not in ("nl-v1",):
+            hints.append("unknown schema (nl-v1 expected)")
+        if not isinstance(obj.get("modules"), list):
+            hints.append("modules missing or not list")
+        meta = obj.get("meta", {})
+        if "g_nodes" not in meta: hints.append("meta.g_nodes missing")
+        if "g_edges" not in meta: hints.append("meta.g_edges missing")
+        idx = meta.get("index", {})
+        if "node_to_modules" not in idx:
+            hints.append("meta.index.node_to_modules missing")
+        return (len(hints) == 0, hints)
+    except Exception as e:
+        return False, [f"validator error: {e}"]

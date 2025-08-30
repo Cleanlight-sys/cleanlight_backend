@@ -46,13 +46,26 @@ def query():
         filter_qs = "&" + "&".join(parts)
 
     # --- READ ALL ---
-    if action == "read_all":
-        url = f"{SUPABASE_URL}/rest/v1/{table}?select={select}{filter_qs}"
-        resp = requests.get(url, headers=HEADERS)
-        if resp.status_code != 200:
-            return jsonify(wrap(None, echo, "Supabase error", {"code": "READ_FAIL", "detail": resp.text})), 500
-        return jsonify(wrap(resp.json(), echo))
+if action == "read_all":
+    # support filters from either top-level or inside payload
+    filters = body.get("filters") or payload.get("filters") or {}
+    filter_qs = ""
+    if filters:
+        parts = []
+        for k, v in filters.items():
+            # v must already be a valid PostgREST op string, e.g. "ilike.*felt*" or "eq.123"
+            parts.append(f"{k}={v}")
+        filter_qs = "&" + "&".join(parts)
 
+    url = f"{SUPABASE_URL}/rest/v1/{table}?select={select}{filter_qs}"
+    resp = requests.get(url, headers=HEADERS)
+    if resp.status_code != 200:
+        return jsonify(wrap(None, echo, "Supabase error", {
+            "code": "READ_FAIL",
+            "detail": resp.text
+        })), 500
+
+    return jsonify(wrap(resp.json(), echo))
     # --- READ ROW ---
     if action == "read_row":
         if not rid:
@@ -96,4 +109,5 @@ def query():
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 

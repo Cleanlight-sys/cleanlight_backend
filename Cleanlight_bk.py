@@ -28,9 +28,83 @@ def wrap(data=None, body=None, hint=None, error=None):
 # --- Serve schema for agents ---
 @app.get("/openapi.json")
 def openapi():
-    with open("openapi.json", "r") as f:
-        spec = json.load(f)
+    spec = {
+        "openapi": "3.1.0",
+        "info": {
+            "title": "Cleanlight Agent API",
+            "version": "1.3",
+            "description": "Single-source schema. All operations through `/query`. `/hint` available for examples."
+        },
+        "servers": [
+            { "url": "https://cleanlight-backend.onrender.com" }
+        ],
+        "paths": {
+            "/query": {
+                "post": {
+                    "operationId": "query",
+                    "summary": "Unified CRUD + SME gate",
+                    "x-openai-isConsequential": False,
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "action": {
+                                            "type": "string",
+                                            "enum": ["read_all", "read_row", "write", "update", "delete", "query"]
+                                        },
+                                        "table": {
+                                            "type": "string",
+                                            "enum": ["docs", "chunks", "graph", "edges"]
+                                        },
+                                        "rid": { "type": "string" },
+                                        "select": { "type": "string" },
+                                        "filters": {
+                                            "type": "object",
+                                            "description": "Example: { \"label\": \"ilike.*felt*\" }"
+                                        },
+                                        "payload": { "type": "object" },
+                                        "stream": { "type": "boolean", "default": False },
+                                        "limit": { "type": "integer", "default": 100 }
+                                    },
+                                    "required": ["action", "table"]
+                                }
+                            }
+                        }
+                    },
+                    "responses": { "200": { "description": "Wrapped response" } }
+                }
+            },
+            "/hint": {
+                "post": {
+                    "operationId": "hint",
+                    "summary": "Get example payloads",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "target": {
+                                            "type": "string",
+                                            "enum": ["read_all", "read_row", "write", "update", "delete", "query", "all"]
+                                        }
+                                    },
+                                    "required": ["target"]
+                                }
+                            }
+                        }
+                    },
+                    "responses": { "200": { "description": "Example payloads" } }
+                }
+            }
+        }
+    }
     return jsonify(spec)
+
 
 @app.get("/health")
 def health():
@@ -77,6 +151,7 @@ def hint_gate():
     
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 
 
 

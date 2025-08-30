@@ -36,8 +36,8 @@ def openapi():
             "description": "Single-source schema. All operations through `/query`. `/hint` available for examples."
         },
         "servers": [
-            { "url": "https://cleanlight-backend.onrender.com" }
-        ],
+            { "url": os.getenv("RENDER_EXTERNAL_URL", "https://cleanlight-backend.onrender.com") }
+        ]
         "paths": {
             "/query": {
                 "post": {
@@ -150,6 +150,7 @@ def hint_gate():
     
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 
 
 

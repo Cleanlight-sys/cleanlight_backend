@@ -46,13 +46,10 @@ def handle(body):
     }
 
     if target == "all":
-        return jsonify(wrap({"examples": examples}, body))
+        return {"examples": examples}, None, None
     elif target in examples:
-        return jsonify(wrap({"examples": {target: examples[target]}}, body))
+        return {"examples": {target: examples[target]}}, None, None
     else:
-        return jsonify(wrap(
-            None,
-            body,
-            hint="Valid targets: read_all, read_row, write, update, delete, query, all",
-            error={"code": "INVALID_HINT_TARGET"}
-        )), 400
+        return None, "Valid targets: read_all, read_row, write, update, delete, query, all", {
+            "code": "INVALID_HINT_TARGET"
+        }

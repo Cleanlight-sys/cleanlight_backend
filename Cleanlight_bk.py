@@ -14,6 +14,7 @@ app = Flask(__name__)
 
 # --- Helpers ---
 def _now(): return datetime.now(timezone.utc).isoformat()
+    
 def wrap(data=None, body=None, hint=None, error=None):
     echo = {"original_body": body}
     out = {"data": data, "echo": echo}
@@ -34,26 +35,32 @@ def health():
 
 # --- Query dispatch ---
 @app.post("/query")
-def query():
+def query_gate():
     body = request.json or {}
     action = body.get("action")
     table  = body.get("table")
 
     if action == "read_all":
-        return read_all.handle(table, body)
+        data, hint, error = read_all.handle(table, body)
+        return jsonify(wrap(data, body, hint, error))
     if action == "read_row":
-        return read_row.handle(table, body)
+        data, hint, error = read_row.handle(table, body)
+        return jsonify(wrap(data, body, hint, error))
     if action == "write":
-        return write.handle(table, body)
+        data, hint, error = write.handle(table, body)
+        return jsonify(wrap(data, body, hint, error))
     if action == "update":
-        return update.handle(table, body)
+        data, hint, error = update.handle(table, body)
+        return jsonify(wrap(data, body, hint, error))
     if action == "delete":
-        return delete.handle(table, body)
+        data, hint, error = delete.handle(table, body)
+        return jsonify(wrap(data, body, hint, error))
 
-    return jsonify(wrap(None, body, "Unknown action", {"code":"BAD_ACTION"})), 400
-
+    return jsonify(wrap(None, body, "Unknown action", {"code": "BAD_ACTION"})), 400
+    
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 
 
 

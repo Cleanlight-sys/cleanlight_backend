@@ -117,31 +117,30 @@ def query_gate():
     action = body.get("action")
     table  = body.get("table")
 
-    if action == "read_all":
-        data, hint, error = read_all.handle(table, body)
-        return jsonify(wrap(data, body, hint, error))
-    if action == "read_row":
-        data, hint, error = read_row.handle(table, body)
-        return jsonify(wrap(data, body, hint, error))
-    if action == "write":
-        data, hint, error = write.handle(table, body)
-        return jsonify(wrap(data, body, hint, error))
-    if action == "update":
-        data, hint, error = update.handle(table, body)
-        return jsonify(wrap(data, body, hint, error))
-    if action == "delete":
-        data, hint, error = delete.handle(table, body)
-        return jsonify(wrap(data, body, hint, error))
+    dispatch = {
+        "read_all": read_all.handle,
+        "read_row": read_row.handle,
+        "write": write.handle,
+        "update": update.handle,
+        "delete": delete.handle,
+    }
+
+    if action in dispatch:
+        data, hint_txt, error = dispatch[action](table, body)
+        return jsonify(wrap(data, body, hint_txt, error))
+
     if action == "query":
         result = query.handle(table, body)
         if len(result) == 4 and result[3] is True:   # streaming
-            generator, hint, error, _ = result
+            generator, hint_txt, error, _ = result
             return Response(stream_with_context(generator), mimetype="application/json")
         else:
-            data, hint, error = result
-            return jsonify(wrap(data, body, hint, error))
+            data, hint_txt, error = result
+            return jsonify(wrap(data, body, hint_txt, error))
 
-    return jsonify(wrap(None, body, "Unknown action", {"code": "BAD_ACTION"})), 400
+    # --- Auto-hint fallback ---
+    data, hint_txt, error = hint.handle({"target": "all"})
+    return jsonify(wrap(data, body, hint_txt, error)), 400
 
 @app.post("/hint")
 def hint_gate():
@@ -151,6 +150,7 @@ def hint_gate():
     
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 
 
 

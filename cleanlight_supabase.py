@@ -35,12 +35,19 @@ def query():
     payload = body.get("payload", {})
     echo    = body.get("echo")
 
-    if table not in ("docs", "chunks", "graph", "edges"):
-        return jsonify(wrap(None, echo, "Unknown table", {"code": "BAD_TABLE"})), 400
+    # NEW: optional filters
+    filters = body.get("filters", {}) or {}
+    filter_qs = ""
+    if filters:
+        parts = []
+        for k, v in filters.items():
+            # v should already be like "ilike.*felt*" or "eq.123"
+            parts.append(f"{k}={v}")
+        filter_qs = "&" + "&".join(parts)
 
     # --- READ ALL ---
     if action == "read_all":
-        url = f"{SUPABASE_URL}/rest/v1/{table}?select={select}"
+        url = f"{SUPABASE_URL}/rest/v1/{table}?select={select}{filter_qs}"
         resp = requests.get(url, headers=HEADERS)
         if resp.status_code != 200:
             return jsonify(wrap(None, echo, "Supabase error", {"code": "READ_FAIL", "detail": resp.text})), 500
@@ -89,3 +96,4 @@ def query():
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+

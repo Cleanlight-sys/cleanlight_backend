@@ -4,7 +4,6 @@ from config import SUPABASE_URL, HEADERS, TABLE_KEYS
 def handle(table, body):
     rid = body.get("rid")
     if not rid:
-        # return tuple: (data, hint, error)
         return None, "Add 'rid': <id>", {"code":"RID_REQUIRED", "field":"rid"}
 
     key_col = TABLE_KEYS.get(table, "id")

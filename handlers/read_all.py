@@ -19,17 +19,17 @@ def handle(table, body):
 
     # Stream vs normal
     if stream:
-        r = requests.get(url, headers=HEADERS, stream=True)
-        def generate():
-            yield '{"data":['
-            first = True
-            for chunk in r.iter_content(chunk_size=None):
-                if chunk:
-                    if not first: yield ","
-                    yield chunk.decode("utf-8")
-                    first = False
-            yield f'], "echo":{json.dumps({"original_body":body})}}'
-        return Response(stream_with_context(generate()), mimetype="application/json")
+    r = requests.get(url, headers=HEADERS, stream=True)
+    def generate():
+        yield '{"data":['
+        first = True
+        for chunk in r.iter_content(chunk_size=None):
+            if chunk:
+                if not first: yield ","
+                yield chunk.decode("utf-8")
+                first = False
+        yield '], "echo":' + json.dumps({"original_body": body}) + '}'
+    return Response(stream_with_context(generate()), mimetype="application/json")
     else:
         r = requests.get(url, headers=HEADERS)
         if r.status_code != 200:

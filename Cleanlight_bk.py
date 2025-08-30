@@ -8,6 +8,17 @@ import handlers.write as write
 import handlers.update as update
 import handlers.delete as delete
 
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+
+TABLE_KEYS = {
+    "docs": "doc_id",
+    "chunks": "id",
+    "graph": "id",
+    "edges": "id",
+}
+
 app = Flask(__name__)
 
 # --- Helpers ---
@@ -52,3 +63,4 @@ def query():
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+

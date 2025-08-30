@@ -1,4 +1,5 @@
-from flask import Flask, request, jsonify, Response, stream_with_context
+from flask import Flask, request, jsonify, Response, stream_with_context, make_response
+from flask_cors import CORS
 from datetime import datetime, timezone
 import os, requests, json
 
@@ -14,20 +15,23 @@ from config import SUPABASE_URL, HEADERS, TABLE_KEYS, wrap
 from schema import build_spec
 
 app = Flask(__name__)
+CORS(app)
 
 # --- Helpers ---
-def _now(): return datetime.now(timezone.utc).isoformat()
+def _now(): 
+    return datetime.now(timezone.utc).isoformat()
 
-# --- Serve schema for agents ---
 @app.get("/openapi.json")
-@app.get("/openai.json")   # alias for OpenAI
-def openapi():
-    return jsonify(build_spec())
-
+@app.get("/openai.json")  # alias
+def serve_openapi():
+    spec = build_spec()
+    response = make_response(jsonify(spec))
+    response.headers["Content-Type"] = "application/json"
+    return response
 
 @app.get("/health")
 def health():
-    return jsonify({"status": "ok", "time": _now()})
+    return {"status": "ok", "time": _now()})
 
 # --- Query dispatch ---
 @app.post("/query")
@@ -69,6 +73,7 @@ def hint_gate():
     
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 
 
 

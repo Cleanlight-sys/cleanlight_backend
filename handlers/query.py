@@ -1,52 +1,50 @@
-import requests
-from flask import jsonify
-from config import wrap, SUPABASE_URL, HEADERS, TABLE_KEYS
+import requests, json
+from config import SUPABASE_URL, HEADERS, TABLE_KEYS
 
 def handle(table, body):
     rid = body.get("rid")
+    stream = body.get("stream", False)
     if not rid:
-        return jsonify(wrap(None, body, "Add 'rid': <id>", {"code":"RID_REQUIRED"})), 400
+        return None, "Add 'rid': <id>", {"code":"RID_REQUIRED","field":"rid"}
 
+    if stream:
+        return _handle_stream(table, body, rid)
+    else:
+        return _handle_normal(table, body, rid)
+
+# --- Normal (non-stream) ---
+def _handle_normal(table, body, rid):
     bundle = {}
 
-    # ---- Docs as root ----
     if table == "docs":
-        # 1. Doc
+        # Doc
         url = f"{SUPABASE_URL}/rest/v1/docs?doc_id=eq.{rid}&select=*"
-        r = requests.get(url, headers=HEADERS)
-        doc = r.json()
+        doc = requests.get(url, headers=HEADERS).json()
         if not doc:
-            return jsonify(wrap(None, body, "Doc not found", {"code":"NOT_FOUND","id":rid})), 404
+            return None, "Doc not found", {"code":"NOT_FOUND","id":rid}
         bundle["doc"] = doc[0]
 
-        # 2. Graph nodes
+        # Graph nodes
         url = f"{SUPABASE_URL}/rest/v1/graph?doc_id=eq.{rid}&select=*"
         g = requests.get(url, headers=HEADERS).json()
         bundle["graph_nodes"] = g
 
-        # 3. Edges for those nodes
-        node_ids = [str(n["id"]) for n in g]
-        if node_ids:
-            id_list = ",".join(node_ids)
-            url = f"{SUPABASE_URL}/rest/v1/edges?source=in.({id_list})&select=*"
-            e = requests.get(url, headers=HEADERS).json()
-            bundle["edges"] = e
-        else:
-            bundle["edges"] = []
+        # Edges
+        url = f"{SUPABASE_URL}/rest/v1/edges?doc_id=eq.{rid}&select=*"
+        e = requests.get(url, headers=HEADERS).json()
+        bundle["edges"] = e
 
-        # 4. Chunks
+        # Chunks
         url = f"{SUPABASE_URL}/rest/v1/chunks?doc_id=eq.{rid}&select=*"
         c = requests.get(url, headers=HEADERS).json()
         bundle["chunks"] = c
 
-    # ---- Graph node as root ----
     elif table == "graph":
         key_col = TABLE_KEYS["graph"]
         url = f"{SUPABASE_URL}/rest/v1/graph?{key_col}=eq.{rid}&select=*"
-        r = requests.get(url, headers=HEADERS)
-        node = r.json()
+        node = requests.get(url, headers=HEADERS).json()
         if not node:
-            return jsonify(wrap(None, body, "Graph node not found", {"code":"NOT_FOUND","id":rid})), 404
+            return None, "Graph node not found", {"code":"NOT_FOUND","id":rid}
         node = node[0]
         bundle["graph_node"] = node
 
@@ -54,13 +52,102 @@ def handle(table, body):
         doc_id = node.get("doc_id")
         if doc_id:
             url = f"{SUPABASE_URL}/rest/v1/docs?doc_id=eq.{doc_id}&select=*"
-            bundle["doc"] = requests.get(url, headers=HEADERS).json()[0]
+            doc = requests.get(url, headers=HEADERS).json()
+            if doc:
+                bundle["doc"] = doc[0]
 
-        # Edges for this node
+        # Edges
         url = f"{SUPABASE_URL}/rest/v1/edges?source=eq.{rid}&select=*"
-        bundle["edges"] = requests.get(url, headers=HEADERS).json()
+        e = requests.get(url, headers=HEADERS).json()
+        bundle["edges"] = e
 
     else:
-        return jsonify(wrap(None, body, "Query only supports docs or graph as root", {"code":"BAD_TABLE"})), 400
+        return None, "Query only supports docs or graph as root", {"code":"BAD_TABLE"}
 
-    return jsonify(wrap(bundle, body))
+    return bundle, None, None
+
+# --- Streaming mode ---
+def _handle_stream(table, body, rid):
+    def generate():
+        yield '{"bundle":{'
+
+        if table == "docs":
+            # Doc
+            url = f"{SUPABASE_URL}/rest/v1/docs?doc_id=eq.{rid}&select=*"
+            doc = requests.get(url, headers=HEADERS).json()
+            if not doc:
+                yield '}, "echo":' + json.dumps({"original_body": body}) + \
+                      ', "hint":"Doc not found", "error":{"code":"NOT_FOUND"}}'
+                return
+            yield '"doc":' + json.dumps(doc[0]) + ','
+
+            # Graph nodes
+            url = f"{SUPABASE_URL}/rest/v1/graph?doc_id=eq.{rid}&select=*"
+            g = requests.get(url, headers=HEADERS, stream=True)
+            yield '"graph_nodes":['
+            first = True
+            for chunk in g.iter_content(chunk_size=None):
+                if chunk:
+                    if not first: yield ","
+                    yield chunk.decode("utf-8").strip("[]")
+                    first = False
+            yield '],'
+
+            # Edges
+            url = f"{SUPABASE_URL}/rest/v1/edges?doc_id=eq.{rid}&select=*"
+            e = requests.get(url, headers=HEADERS, stream=True)
+            yield '"edges":['
+            first = True
+            for chunk in e.iter_content(chunk_size=None):
+                if chunk:
+                    if not first: yield ","
+                    yield chunk.decode("utf-8").strip("[]")
+                    first = False
+            yield '],'
+
+            # Chunks
+            url = f"{SUPABASE_URL}/rest/v1/chunks?doc_id=eq.{rid}&select=*"
+            c = requests.get(url, headers=HEADERS, stream=True)
+            yield '"chunks":['
+            first = True
+            for chunk in c.iter_content(chunk_size=None):
+                if chunk:
+                    if not first: yield ","
+                    yield chunk.decode("utf-8").strip("[]")
+                    first = False
+            yield ']'
+
+        elif table == "graph":
+            key_col = TABLE_KEYS["graph"]
+            url = f"{SUPABASE_URL}/rest/v1/graph?{key_col}=eq.{rid}&select=*"
+            node = requests.get(url, headers=HEADERS).json()
+            if not node:
+                yield '}, "echo":' + json.dumps({"original_body": body}) + \
+                      ', "hint":"Graph node not found", "error":{"code":"NOT_FOUND"}}'
+                return
+            node = node[0]
+            yield '"graph_node":' + json.dumps(node) + ','
+
+            # Parent doc
+            doc_id = node.get("doc_id")
+            if doc_id:
+                url = f"{SUPABASE_URL}/rest/v1/docs?doc_id=eq.{doc_id}&select=*"
+                doc = requests.get(url, headers=HEADERS).json()
+                if doc:
+                    yield '"doc":' + json.dumps(doc[0]) + ','
+
+            # Edges
+            url = f"{SUPABASE_URL}/rest/v1/edges?source=eq.{rid}&select=*"
+            e = requests.get(url, headers=HEADERS, stream=True)
+            yield '"edges":['
+            first = True
+            for chunk in e.iter_content(chunk_size=None):
+                if chunk:
+                    if not first: yield ","
+                    yield chunk.decode("utf-8").strip("[]")
+                    first = False
+            yield ']'
+
+        yield '}, "echo":' + json.dumps({"original_body": body}) + '}'
+
+    return generate(), None, None, True

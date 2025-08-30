@@ -1,67 +1,58 @@
-def handle(body):
-    action = body.get("action")
+import json
+from flask import jsonify
+from config import wrap
 
-    hints = {
+def handle(body):
+    target = body.get("target")
+    echo = {"original_body": body}
+
+    examples = {
         "read_all": {
-            "example": {
-                "action": "read_all",
-                "table": "graph",
-                "select": "id,doc_id,label,ntype,page",
-                "filters": { "label": "ilike.*felt*" },
-                "limit": 100,
-                "stream": False
-            },
-            "notes": "Use filters for WHERE clauses. Set stream=true for continuous results."
+            "action": "read_all",
+            "table": "graph",
+            "select": "id,doc_id,label,ntype,page",
+            "filters": {"label": "ilike.*felt*"}
         },
         "read_row": {
-            "example": {
-                "action": "read_row",
-                "table": "docs",
-                "rid": "ba2f103015526adc",
-                "select": "*"
-            },
-            "notes": "rid is required. Defaults select to *."
+            "action": "read_row",
+            "table": "docs",
+            "rid": "ba2f103015526adc"
         },
         "write": {
-            "example": {
-                "action": "write",
-                "table": "chunks",
-                "payload": { "doc_id": "abc123", "content": "New text..." }
-            },
-            "notes": "Payload must match table schema."
+            "action": "write",
+            "table": "docs",
+            "payload": {
+                "title": "Example Doc",
+                "meta": {"tags": ["bootstrap"]}
+            }
         },
         "update": {
-            "example": {
-                "action": "update",
-                "table": "graph",
-                "rid": 52,
-                "payload": { "label": "felt hat" }
-            },
-            "notes": "rid is required. Partial fields accepted."
+            "action": "update",
+            "table": "docs",
+            "rid": "123",
+            "payload": {"title": "Updated Title"}
         },
         "delete": {
-            "example": {
-                "action": "delete",
-                "table": "graph",
-                "rid": 52
-            },
-            "notes": "rid is required. Response confirms deletion."
+            "action": "delete",
+            "table": "docs",
+            "rid": "123"
         },
         "query": {
-            "example": {
-                "action": "query",
-                "table": "docs",
-                "rid": "ba2f103015526adc",
-                "stream": False
-            },
-            "notes": "Returns doc, graph_nodes, edges, and chunks. Stream for large bundles."
-        },
+            "action": "query",
+            "table": "graph",
+            "filters": {"label": "ilike.*beaver*"},
+            "stream": True
+        }
     }
 
-    if action == "all":
-        return hints, None, None
-
-    if action in hints:
-        return hints[action], None, None
-
-    return None, "Unknown action", {"code":"BAD_HINT","action":action}
+    if target == "all":
+        return jsonify(wrap({"examples": examples}, body))
+    elif target in examples:
+        return jsonify(wrap({"examples": {target: examples[target]}}, body))
+    else:
+        return jsonify(wrap(
+            None,
+            body,
+            hint="Valid targets: read_all, read_row, write, update, delete, query, all",
+            error={"code": "INVALID_HINT_TARGET"}
+        )), 400

@@ -7,6 +7,7 @@ import handlers.read_rows as read_row
 import handlers.write as write
 import handlers.update as update
 import handlers.delete as delete
+import handlers.query as query
 from config import wrap, SUPABASE_URL, HEADERS, TABLE_KEYS
 
 
@@ -55,11 +56,20 @@ def query_gate():
     if action == "delete":
         data, hint, error = delete.handle(table, body)
         return jsonify(wrap(data, body, hint, error))
+    if action == "query":
+        result = query.handle(table, body)
+        if len(result) == 4 and result[3] is True:   # streaming
+            generator, hint, error, _ = result
+            return Response(stream_with_context(generator), mimetype="application/json")
+        else:
+            data, hint, error = result
+            return jsonify(wrap(data, body, hint, error))
 
     return jsonify(wrap(None, body, "Unknown action", {"code": "BAD_ACTION"})), 400
     
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 
 
 

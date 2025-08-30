@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 
 app = Flask(__name__)
 
-# Mock in-memory DB (replace with real Supabase client)
 DB = {
     "docs": [],
     "chunks": [],
@@ -42,7 +41,8 @@ def query():
 
     # READ ROW
     if action == "read_row":
-        row = next((r for r in DB[table] if r.get("id") == rid or r.get("doc_id") == rid), None)
+        key = "doc_id" if table == "docs" else "id"
+        row = next((r for r in DB[table] if r.get(key) == rid), None)
         if not row:
             return jsonify(wrap(None, echo, "Not found", {"code":"NOT_FOUND"})), 404
         return jsonify(wrap(row, echo))
@@ -50,31 +50,30 @@ def query():
     # WRITE
     if action == "write":
         new = payload.copy()
-        # auto ID if not provided
-        pk = "id" if table in ("chunks","graph","edges") else "doc_id"
-        if pk not in new:
-            new[pk] = len(DB[table]) + 1 if pk == "id" else f"doc_{len(DB[table])+1}"
         if table == "docs":
-            new.setdefault("sha256","")
-            new.setdefault("meta",{})
-        if table == "chunks":
-            new.setdefault("sha256","")
-            new.setdefault("embedding",[])
+            new.setdefault("doc_id", f"doc_{len(DB[table])+1}")
+            new.setdefault("title", "")
+            new.setdefault("meta", {})
+            new.setdefault("sha256", "")
+        else:
+            new.setdefault("id", len(DB[table]) + 1)
         DB[table].append(new)
         return jsonify(wrap(new, echo))
 
     # UPDATE
     if action == "update":
+        key = "doc_id" if table == "docs" else "id"
         for r in DB[table]:
-            if r.get("id") == rid or r.get("doc_id") == rid:
+            if r.get(key) == rid:
                 r.update(payload)
                 return jsonify(wrap(r, echo))
         return jsonify(wrap(None, echo, "Not found", {"code":"NOT_FOUND"})), 404
 
     # DELETE
     if action == "delete":
+        key = "doc_id" if table == "docs" else "id"
         before = len(DB[table])
-        DB[table] = [r for r in DB[table] if not (r.get("id") == rid or r.get("doc_id") == rid)]
+        DB[table] = [r for r in DB[table] if r.get(key) != rid]
         if len(DB[table]) == before:
             return jsonify(wrap(None, echo, "Not found", {"code":"NOT_FOUND"})), 404
         return jsonify(wrap({"status":"deleted","rid":rid}, echo))

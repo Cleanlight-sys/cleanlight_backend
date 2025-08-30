@@ -10,7 +10,7 @@ import handlers.delete as delete
 import handlers.query as query
 import handlers.hint as hint
 
-from config import wrap, SUPABASE_URL, HEADERS, TABLE_KEYS
+from config import SUPABASE_URL, HEADERS, TABLE_KEYS
 
 
 app = Flask(__name__)
@@ -77,6 +77,7 @@ def hint_gate():
     
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 
 
 

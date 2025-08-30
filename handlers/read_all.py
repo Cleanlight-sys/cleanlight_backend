@@ -1,18 +1,14 @@
-import os, requests, json
+import requests, json
 from flask import jsonify, Response, stream_with_context
-from Cleanlight_bk import wrap
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-TABLE_KEYS = { "docs": "doc_id", "chunks": "id", "graph": "id", "edges": "id" }
+from Cleanlight_bk import wrap, SUPABASE_URL, HEADERS
 
 def handle(table, body):
     select = body.get("select", "*")
-    filters= body.get("filters") or {}
-    stream = body.get("stream", False)
-    limit  = int(body.get("limit", 100))
+    filters = body.get("filters") or {}
+    stream  = body.get("stream", False)
+    limit   = int(body.get("limit", 100))
 
+    # Build query string
     qs = []
     for k, v in filters.items():
         qs.append(f"{k}={v}")
@@ -21,6 +17,7 @@ def handle(table, body):
     filter_qs = "&" + "&".join(qs) if qs else ""
     url = f"{SUPABASE_URL}/rest/v1/{table}?select={select}{filter_qs}"
 
+    # Stream vs normal
     if stream:
         r = requests.get(url, headers=HEADERS, stream=True)
         def generate():

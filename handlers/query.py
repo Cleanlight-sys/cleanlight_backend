@@ -1,8 +1,9 @@
-import requests
+import requests, json
+from flask import Response, stream_with_context
 from config import SUPABASE_URL, HEADERS, TABLE_KEYS
 
 def handle(table, body):
-    rid = body.get("rid")
+    rid     = body.get("rid")
     filters = body.get("filters") or {}
     stream  = body.get("stream", False)
     limit   = int(body.get("limit", 100))
@@ -10,7 +11,7 @@ def handle(table, body):
     # ---- Graph starting point ----
     if table == "graph":
         if filters:
-            # Resolve matching graph nodes by filter (e.g., label ilike.*felt*)
+            # Resolve matching graph nodes by filters (e.g. label ilike.*shellac*)
             qs = []
             for k, v in filters.items():
                 qs.append(f"{k}={v}")
@@ -22,26 +23,44 @@ def handle(table, body):
             nodes = r.json()
             if not nodes:
                 return None, "No matching graph nodes", {"code":"NO_MATCH"}
-            
+
             bundles = []
             for node in nodes:
                 doc_id = node.get("doc_id")
-                doc_url   = f"{SUPABASE_URL}/rest/v1/docs?id=eq.{doc_id}"
-                edges_url = f"{SUPABASE_URL}/rest/v1/edges?source=eq.{node['id']}"
+                node_id = node.get("id")
 
-                doc_r   = requests.get(doc_url, headers=HEADERS)
-                edges_r = requests.get(edges_url, headers=HEADERS)
+                doc_url    = f"{SUPABASE_URL}/rest/v1/docs?id=eq.{doc_id}"
+                edges_url  = f"{SUPABASE_URL}/rest/v1/edges?src_id=eq.{node_id}"
+                chunks_url = f"{SUPABASE_URL}/rest/v1/chunks?doc_id=eq.{doc_id}"
+
+                doc_r    = requests.get(doc_url, headers=HEADERS)
+                edges_r  = requests.get(edges_url, headers=HEADERS)
+                chunks_r = requests.get(chunks_url, headers=HEADERS)
 
                 bundles.append({
                     "graph_node": node,
                     "doc": doc_r.json()[0] if doc_r.status_code == 200 and doc_r.json() else None,
-                    "edges": edges_r.json() if edges_r.status_code == 200 else []
+                    "edges": edges_r.json() if edges_r.status_code == 200 else [],
+                    "chunks": chunks_r.json() if chunks_r.status_code == 200 else []
                 })
-            
+
+            # --- Streaming mode ---
+            if stream:
+                def generate():
+                    yield '{"data":['
+                    first = True
+                    for b in bundles:
+                        if not first:
+                            yield ','
+                        yield json.dumps(b)
+                        first = False
+                    yield ']}'
+                return Response(stream_with_context(generate()), mimetype="application/json")
+
             return bundles, None, None
 
         elif rid:
-            # Normal single-graph-node lookup
+            # Single graph node lookup
             key_col = TABLE_KEYS.get("graph", "id")
             url = f"{SUPABASE_URL}/rest/v1/graph?{key_col}=eq.{rid}"
             r = requests.get(url, headers=HEADERS)
@@ -50,16 +69,20 @@ def handle(table, body):
             node = r.json()[0]
 
             doc_id = node.get("doc_id")
-            doc_url   = f"{SUPABASE_URL}/rest/v1/docs?id=eq.{doc_id}"
-            edges_url = f"{SUPABASE_URL}/rest/v1/edges?source=eq.{node['id']}"
 
-            doc_r   = requests.get(doc_url, headers=HEADERS)
-            edges_r = requests.get(edges_url, headers=HEADERS)
+            doc_url    = f"{SUPABASE_URL}/rest/v1/docs?id=eq.{doc_id}"
+            edges_url  = f"{SUPABASE_URL}/rest/v1/edges?src_id=eq.{node['id']}"
+            chunks_url = f"{SUPABASE_URL}/rest/v1/chunks?doc_id=eq.{doc_id}"
+
+            doc_r    = requests.get(doc_url, headers=HEADERS)
+            edges_r  = requests.get(edges_url, headers=HEADERS)
+            chunks_r = requests.get(chunks_url, headers=HEADERS)
 
             return {
                 "graph_node": node,
                 "doc": doc_r.json()[0] if doc_r.status_code == 200 and doc_r.json() else None,
-                "edges": edges_r.json() if edges_r.status_code == 200 else []
+                "edges": edges_r.json() if edges_r.status_code == 200 else [],
+                "chunks": chunks_r.json() if chunks_r.status_code == 200 else []
             }, None, None
 
         else:

@@ -1,6 +1,6 @@
 import requests, json
 from flask import jsonify, Response, stream_with_context
-from Cleanlight_bk import wrap, SUPABASE_URL, HEADERS
+from config import wrap, SUPABASE_URL, HEADERS
 
 def handle(table, body):
     select = body.get("select", "*")

@@ -13,4 +13,9 @@ TABLE_KEYS = {
     "graph": "id",
     "edges": "id",
 }
-
+def wrap(data=None, body=None, hint=None, error=None):
+    echo = {"original_body": body}
+    out = {"data": data, "echo": echo}
+    if hint is not None: out["hint"] = hint
+    if error is not None: out["error"] = error
+    return out

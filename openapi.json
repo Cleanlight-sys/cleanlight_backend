@@ -1,0 +1,78 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Cleanlight Agent API",
+    "version": "1.0",
+    "description": "All agent CRUD operations go through a single endpoint `/query`. Agents should always use `id` for row identifiers; the backend rewrites to correct schema keys."
+  },
+  "servers": [
+    { "url": "https://<your-render-app>.onrender.com" }
+  ],
+  "paths": {
+    "/query": {
+      "post": {
+        "operationId": "query",
+        "summary": "Unified CRUD gate",
+        "x-openai-isConsequential": false,
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "action": { "type": "string", "enum": ["read_all", "read_row", "write", "update", "delete"] },
+                  "table": { "type": "string", "enum": ["docs", "chunks", "graph", "edges"] },
+                  "rid": { "type": "string", "description": "Always use 'id'; backend rewrites to correct key" },
+                  "select": { "type": "string" },
+                  "filters": { "type": "object" },
+                  "payload": { "type": "object" },
+                  "stream": { "type": "boolean" },
+                  "limit": { "type": "integer" }
+                },
+                "required": ["action", "table"]
+              },
+              "examples": {
+                "readFelt": {
+                  "summary": "Read 'felt' nodes from graph",
+                  "value": {
+                    "action": "read_all",
+                    "table": "graph",
+                    "select": "id,doc_id,label,ntype,page",
+                    "filters": { "label": "ilike.*felt*" }
+                  }
+                },
+                "readDoc": {
+                  "summary": "Read single doc by id",
+                  "value": {
+                    "action": "read_row",
+                    "table": "docs",
+                    "rid": "ba2f103015526adc"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Wrapped response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {},
+                    "echo": { "type": "object" },
+                    "hint": { "type": "string" },
+                    "error": { "type": "object" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

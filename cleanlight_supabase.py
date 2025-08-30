@@ -1,84 +1,91 @@
-# cleanlight_supabase.py
 from flask import Flask, request, jsonify
 from datetime import datetime, timezone
+import os, requests, json
 
 app = Flask(__name__)
 
-DB = {
-    "docs": [],
-    "chunks": [],
-    "graph": [],
-    "edges": []
+# --- Config ---
+SUPABASE_URL = os.getenv("SUPABASE_URL")  # e.g. https://<project>.supabase.co
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")  # use service_role for full access
+HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}"
 }
 
+# --- Helpers ---
 def _now():
     return datetime.now(timezone.utc).isoformat()
 
 def wrap(data=None, echo=None, hint=None, error=None):
     return {"data": data, "echo": echo, "hint": hint, "error": error}
 
+# --- Health ---
 @app.get("/health")
 def health():
     return jsonify({"status": "ok", "time": _now()})
 
+# --- Query Proxy ---
 @app.post("/query")
 def query():
     body = request.json or {}
-    table, action = body.get("table"), body.get("action")
-    rid, payload, echo = body.get("rid"), body.get("payload", {}), body.get("echo")
+    table   = body.get("table")
+    action  = body.get("action")
+    select  = body.get("select", "*")
+    rid     = body.get("rid")
+    payload = body.get("payload", {})
+    echo    = body.get("echo")
 
-    if table not in DB:
-        return jsonify(wrap(None, echo, "Unknown table", {"code":"BAD_TABLE"})), 400
+    if table not in ("docs", "chunks", "graph", "edges"):
+        return jsonify(wrap(None, echo, "Unknown table", {"code": "BAD_TABLE"})), 400
 
-    # READ ALL
+    # --- READ ALL ---
     if action == "read_all":
-        select = body.get("select")
-        rows = DB[table]
-        if select:
-            fields = select.split(",")
-            rows = [{k: r.get(k) for k in fields if k in r} for r in rows]
-        return jsonify(wrap(rows, echo))
+        url = f"{SUPABASE_URL}/rest/v1/{table}?select={select}"
+        resp = requests.get(url, headers=HEADERS)
+        if resp.status_code != 200:
+            return jsonify(wrap(None, echo, "Supabase error", {"code": "READ_FAIL", "detail": resp.text})), 500
+        return jsonify(wrap(resp.json(), echo))
 
-    # READ ROW
+    # --- READ ROW ---
     if action == "read_row":
-        key = "doc_id" if table == "docs" else "id"
-        row = next((r for r in DB[table] if r.get(key) == rid), None)
-        if not row:
-            return jsonify(wrap(None, echo, "Not found", {"code":"NOT_FOUND"})), 404
-        return jsonify(wrap(row, echo))
+        if not rid:
+            return jsonify(wrap(None, echo, "Missing rid", {"code": "RID_REQUIRED"})), 400
+        url = f"{SUPABASE_URL}/rest/v1/{table}?id=eq.{rid}&select={select}"
+        resp = requests.get(url, headers=HEADERS)
+        rows = resp.json()
+        if not rows:
+            return jsonify(wrap(None, echo, "Not found", {"code": "NOT_FOUND", "id": rid})), 404
+        return jsonify(wrap(rows[0], echo))
 
-    # WRITE
+    # --- WRITE ---
     if action == "write":
-        new = payload.copy()
-        if table == "docs":
-            new.setdefault("doc_id", f"doc_{len(DB[table])+1}")
-            new.setdefault("title", "")
-            new.setdefault("meta", {})
-            new.setdefault("sha256", "")
-        else:
-            new.setdefault("id", len(DB[table]) + 1)
-        DB[table].append(new)
-        return jsonify(wrap(new, echo))
+        url = f"{SUPABASE_URL}/rest/v1/{table}"
+        resp = requests.post(url, headers={**HEADERS,"Content-Type":"application/json"}, json=payload)
+        if resp.status_code not in (200,201):
+            return jsonify(wrap(None, echo, "Insert failed", {"code": "WRITE_FAIL", "detail": resp.text})), 500
+        return jsonify(wrap(resp.json(), echo))
 
-    # UPDATE
+    # --- UPDATE ---
     if action == "update":
-        key = "doc_id" if table == "docs" else "id"
-        for r in DB[table]:
-            if r.get(key) == rid:
-                r.update(payload)
-                return jsonify(wrap(r, echo))
-        return jsonify(wrap(None, echo, "Not found", {"code":"NOT_FOUND"})), 404
+        if not rid:
+            return jsonify(wrap(None, echo, "Missing rid", {"code": "RID_REQUIRED"})), 400
+        url = f"{SUPABASE_URL}/rest/v1/{table}?id=eq.{rid}"
+        resp = requests.patch(url, headers={**HEADERS,"Content-Type":"application/json"}, json=payload)
+        if resp.status_code != 200:
+            return jsonify(wrap(None, echo, "Update failed", {"code": "UPDATE_FAIL", "detail": resp.text})), 500
+        return jsonify(wrap(resp.json(), echo))
 
-    # DELETE
+    # --- DELETE ---
     if action == "delete":
-        key = "doc_id" if table == "docs" else "id"
-        before = len(DB[table])
-        DB[table] = [r for r in DB[table] if r.get(key) != rid]
-        if len(DB[table]) == before:
-            return jsonify(wrap(None, echo, "Not found", {"code":"NOT_FOUND"})), 404
+        if not rid:
+            return jsonify(wrap(None, echo, "Missing rid", {"code": "RID_REQUIRED"})), 400
+        url = f"{SUPABASE_URL}/rest/v1/{table}?id=eq.{rid}"
+        resp = requests.delete(url, headers=HEADERS)
+        if resp.status_code != 204:
+            return jsonify(wrap(None, echo, "Delete failed", {"code": "DELETE_FAIL", "detail": resp.text})), 500
         return jsonify(wrap({"status":"deleted","rid":rid}, echo))
 
-    return jsonify(wrap(None, echo, "Unknown action", {"code":"BAD_ACTION"})), 400
+    return jsonify(wrap(None, echo, "Unknown action", {"code": "BAD_ACTION"})), 400
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)

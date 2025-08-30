@@ -8,6 +8,8 @@ import handlers.write as write
 import handlers.update as update
 import handlers.delete as delete
 import handlers.query as query
+import handlers.hint as hint
+
 from config import wrap, SUPABASE_URL, HEADERS, TABLE_KEYS
 
 
@@ -66,9 +68,16 @@ def query_gate():
             return jsonify(wrap(data, body, hint, error))
 
     return jsonify(wrap(None, body, "Unknown action", {"code": "BAD_ACTION"})), 400
+
+@app.post("/hint")
+def hint_gate():
+    body = request.json or {}
+    data, hint_txt, error = hint.handle(body)
+    return jsonify(wrap(data, body, hint_txt, error))
     
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 
 
 

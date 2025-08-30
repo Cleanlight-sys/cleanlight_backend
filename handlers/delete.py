@@ -1,6 +1,6 @@
 import os, requests
 from flask import jsonify
-from Cleanlight_bk import wrap, SUPABASE_URL, HEADERS, TABLE_KEYS
+from config import wrap, SUPABASE_URL, HEADERS, TABLE_KEYS
 
 def handle(table, body):
     rid = body.get("rid")

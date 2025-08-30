@@ -1,18 +1,19 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "Cleanlight Agent API",
+    "title": "Cleanlight Backend API",
     "version": "1.0",
-    "description": "All agent CRUD operations go through a single endpoint `/query`. Agents should always use `id` for row identifiers; the backend rewrites to correct schema keys."
+    "description": "Full backend schema. All CRUD operations go through /query, examples available via /hint. Used for documentation and backend introspection."
   },
   "servers": [
-    { "url": "https://<your-render-app>.onrender.com" }
+    { "url": "https://cleanlight-backend.onrender.com" }
   ],
   "paths": {
     "/query": {
       "post": {
         "operationId": "query",
         "summary": "Unified CRUD gate",
+        "description": "Perform read/write/update/delete against docs, chunks, graph, and edges.",
         "x-openai-isConsequential": false,
         "requestBody": {
           "required": true,
@@ -21,9 +22,18 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "action": { "type": "string", "enum": ["read_all", "read_row", "write", "update", "delete"] },
-                  "table": { "type": "string", "enum": ["docs", "chunks", "graph", "edges"] },
-                  "rid": { "type": "string", "description": "Always use 'id'; backend rewrites to correct key" },
+                  "action": {
+                    "type": "string",
+                    "enum": ["read_all", "read_row", "write", "update", "delete", "query"]
+                  },
+                  "table": {
+                    "type": "string",
+                    "enum": ["docs", "chunks", "graph", "edges"]
+                  },
+                  "rid": {
+                    "type": "string",
+                    "description": "Always use 'id'; backend rewrites to correct schema keys"
+                  },
                   "select": { "type": "string" },
                   "filters": { "type": "object" },
                   "payload": { "type": "object" },
@@ -31,25 +41,6 @@
                   "limit": { "type": "integer" }
                 },
                 "required": ["action", "table"]
-              },
-              "examples": {
-                "readFelt": {
-                  "summary": "Read 'felt' nodes from graph",
-                  "value": {
-                    "action": "read_all",
-                    "table": "graph",
-                    "select": "id,doc_id,label,ntype,page",
-                    "filters": { "label": "ilike.*felt*" }
-                  }
-                },
-                "readDoc": {
-                  "summary": "Read single doc by id",
-                  "value": {
-                    "action": "read_row",
-                    "table": "docs",
-                    "rid": "ba2f103015526adc"
-                  }
-                }
               }
             }
           }
@@ -66,6 +57,63 @@
                     "echo": { "type": "object" },
                     "hint": { "type": "string" },
                     "error": { "type": "object" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/hint": {
+      "post": {
+        "operationId": "hint",
+        "summary": "Get usage examples for any action",
+        "description": "Returns example request bodies and notes for a given action (or all actions).",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "action": {
+                    "type": "string",
+                    "enum": ["read_all", "read_row", "write", "update", "delete", "query", "all"]
+                  }
+                },
+                "example": { "action": "query" }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Hints returned",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "summary": "Health check",
+        "description": "Liveness probe with current UTC time.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": { "type": "string" },
+                    "time": { "type": "string", "format": "date-time" }
                   }
                 }
               }

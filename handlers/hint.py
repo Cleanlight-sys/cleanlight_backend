@@ -1,6 +1,6 @@
 import json
 from flask import jsonify
-from config import wrap
+from Cleanlight_bk import wrap
 
 def handle(body):
     target = body.get("target")

@@ -10,20 +10,13 @@ import handlers.delete as delete
 import handlers.query as query
 import handlers.hint as hint
 
-from config import SUPABASE_URL, HEADERS, TABLE_KEYS
+from config import SUPABASE_URL, HEADERS, TABLE_KEYS, wrap
 from schema import build_spec
 
 app = Flask(__name__)
 
 # --- Helpers ---
 def _now(): return datetime.now(timezone.utc).isoformat()
-    
-def wrap(data=None, body=None, hint=None, error=None):
-    echo = {"original_body": body}
-    out = {"data": data, "echo": echo}
-    if hint is not None: out["hint"] = hint
-    if error is not None: out["error"] = error
-    return out
 
 # --- Serve schema for agents ---
 @app.get("/openapi.json")
@@ -76,6 +69,7 @@ def hint_gate():
     
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 
 
 

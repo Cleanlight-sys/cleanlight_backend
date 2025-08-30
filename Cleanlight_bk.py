@@ -31,7 +31,7 @@ def serve_openapi():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "time": _now()})
+    return {"status": "ok", "time": _now()}
 
 # --- Query dispatch ---
 @app.post("/query")
@@ -73,6 +73,7 @@ def hint_gate():
     
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 
 
 

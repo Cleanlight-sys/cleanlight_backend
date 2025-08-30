@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import os, requests, json
 
 import handlers.read_all as read_all
-import handlers.read_row as read_row
+import handlers.read_rows as read_row
 import handlers.write as write
 import handlers.update as update
 import handlers.delete as delete
@@ -54,5 +54,6 @@ def query():
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 
 

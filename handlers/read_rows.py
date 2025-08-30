@@ -1,11 +1,6 @@
 import os, requests
 from flask import jsonify
-from Cleanlight_bk import wrap
-
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-HEADERS = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-TABLE_KEYS = { "docs": "doc_id", "chunks": "id", "graph": "id", "edges": "id" }
+from Cleanlight_bk import wrap, SUPABASE_URL, HEADERS, TABLE_KEYS
 
 def handle(table, body):
     rid = body.get("rid")

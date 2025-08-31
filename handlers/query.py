@@ -2,7 +2,16 @@ import requests, json
 from flask import Response, stream_with_context
 from config import SUPABASE_URL, HEADERS, TABLE_KEYS
 
-def handle(table, body):
+def handle(table, body=None, **kwargs):
+    """
+    Unified SME query handler.
+    Supports 'graph' and 'docs' starting points.
+    Tolerates extra kwargs (e.g. filters passed top-level).
+    """
+
+    # merge kwargs into body so stray args don't break things
+    body = {**(body or {}), **kwargs}
+
     rid     = body.get("rid")
     filters = body.get("filters") or {}
     stream  = body.get("stream", False)
@@ -11,10 +20,8 @@ def handle(table, body):
     # ---- Graph starting point ----
     if table == "graph":
         if filters:
-            # Resolve matching graph nodes by filters (e.g. label ilike.*shellac*)
-            qs = []
-            for k, v in filters.items():
-                qs.append(f"{k}={v}")
+            # Build filter querystring
+            qs = [f"{k}={v}" for k, v in filters.items()]
             qs.append(f"limit={limit}")
             url = f"{SUPABASE_URL}/rest/v1/graph?{'&'.join(qs)}"
             r = requests.get(url, headers=HEADERS)

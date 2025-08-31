@@ -5,7 +5,7 @@ base = {
     "openapi": "3.1.0",
     "info": {
         "title": "Cleanlight Agent API",
-        "version": "1.3",
+        "version": "1.4",
         "description": "Single-source schema. All operations through `/query`. `/hint` available for examples."
     },
     "servers": [

@@ -21,10 +21,15 @@ CORS(app)
 def _now(): 
     return datetime.now(timezone.utc).isoformat()
 
+# --- Schema endpoints ---
 @app.get("/openapi.json")
 @app.get("/openai.json")  # alias
 def serve_openapi():
+    """
+    Serve OpenAPI schema dynamically (rebuilt from schema/ each time).
+    """
     spec = build_spec()
+    spec["servers"] = [{"url": os.getenv("RENDER_EXTERNAL_URL", "http://localhost:8000")}]
     response = make_response(jsonify(spec))
     response.headers["Content-Type"] = "application/json"
     return response
@@ -36,9 +41,14 @@ def health():
 # --- Query dispatch ---
 @app.post("/query")
 def query_gate():
+    """
+    Unified query gateway: routes CRUD + SME queries to handlers,
+    always wrapped through config.wrap() for consistent responses.
+    """
     body = request.json or {}
     action = body.get("action")
     table  = body.get("table")
+    stream = body.get("stream", False)
 
     dispatch = {
         "read_all": read_all.handle,
@@ -48,43 +58,29 @@ def query_gate():
         "delete": delete.handle,
     }
 
+    data, error, hint_txt = None, None, None
+
     if action in dispatch:
-        data, hint_txt, error = dispatch[action](table, body)
-        return jsonify(wrap(data, body, hint_txt, error))
+        data, error, hint_txt = dispatch[action](table, body)
+        return wrap(data, body, hint_txt, error, stream=stream)
 
     if action == "query":
-        result = query.handle(table, body)
-        if len(result) == 4 and result[3] is True:   # streaming
-            generator, hint_txt, error, _ = result
-            return Response(stream_with_context(generator), mimetype="application/json")
-        else:
-            data, hint_txt, error = result
-            return jsonify(wrap(data, body, hint_txt, error))
+        data, error, hint_txt = query.handle(table, body)
+        return wrap(data, body, hint_txt, error, stream=stream)
+
+    if action == "hint":
+        data, error, hint_txt = hint.handle(body)
+        return wrap(data, body, hint_txt, error, stream=stream)
 
     # --- Auto-hint fallback ---
-    data, hint_txt, error = hint.handle({"target": "all"})
-    return jsonify(wrap(data, body, hint_txt, error)), 400
+    data, error, hint_txt = hint.handle({"target": "all"})
+    return wrap(data, body, hint_txt, error), 400
 
 @app.post("/hint")
 def hint_gate():
     body = request.json or {}
-    data, hint_txt, error = hint.handle(body)
-    return jsonify(wrap(data, body, hint_txt, error))
-    
+    data, error, hint_txt = hint.handle(body)
+    return wrap(data, body, hint_txt, error)
+
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

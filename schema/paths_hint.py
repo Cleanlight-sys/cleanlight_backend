@@ -1,37 +1,37 @@
 # schema/paths_hint.py
-hint = {
-    "/hint": {
-        "post": {
-            "operationId": "hint",
-            "summary": "Get example payloads",
-            "requestBody": {
-                "required": True,
-                "content": {
-                    "application/json": {
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "target": {
-                                    "type": "string",
-                                    "enum": [
-                                        "read_all",
-                                        "read_row",
-                                        "write",
-                                        "update",
-                                        "delete",
-                                        "query",
-                                        "all"
-                                    ]
+
+def get():
+    """
+    OpenAPI path definition for /hint endpoint.
+    """
+    return {
+        "/hint": {
+            "post": {
+                "summary": "Return example payloads",
+                "description": "Provides example payloads for each action or for all actions.",
+                "operationId": "hint",
+                "requestBody": {
+                    "required": False,
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object",
+                                "properties": {
+                                    "action": {
+                                        "type": "string",
+                                        "description": "Target action for which to return example payloads",
+                                        "example": "query"
+                                    }
                                 }
-                            },
-                            "required": ["target"]
+                            }
                         }
                     }
+                },
+                "responses": {
+                    "200": {
+                        "description": "Standard wrapped response with hints"
+                    }
                 }
-            },
-            "responses": {
-                "200": { "description": "Example payloads" }
             }
         }
     }
-}

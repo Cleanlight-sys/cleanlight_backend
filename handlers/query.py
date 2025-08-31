@@ -1,9 +1,10 @@
-# handlers/query.py
 import requests, json
 from config import SUPABASE_URL, HEADERS, TABLE_KEYS
 
 def validate_bundle(bundle):
-    """Attach SME diagnostics so we know what's missing/malformed."""
+    """
+    Attach SME diagnostics so we know what's missing/malformed.
+    """
     issues = []
     node = bundle.get("graph_node")
     doc = bundle.get("doc")
@@ -11,17 +12,23 @@ def validate_bundle(bundle):
     if not node:
         issues.append("MISSING_GRAPH_NODE")
     else:
-        if not node.get("label"): issues.append("NODE_NO_LABEL")
-        if not node.get("doc_id"): issues.append("NODE_NO_DOC_ID")
+        if not node.get("label"):
+            issues.append("NODE_NO_LABEL")
+        if not node.get("doc_id"):
+            issues.append("NODE_NO_DOC_ID")
 
     if not doc:
         issues.append("MISSING_DOC")
     else:
-        if not doc.get("meta"): issues.append("DOC_NO_META")
-        if not doc.get("sha256"): issues.append("DOC_NO_SHA256")
+        if not doc.get("meta"):
+            issues.append("DOC_NO_META")
+        if not doc.get("sha256"):
+            issues.append("DOC_NO_SHA256")
 
-    if not bundle.get("chunks"): issues.append("NO_CHUNKS")
-    if not bundle.get("edges"): issues.append("NO_EDGES")
+    if not bundle.get("chunks"):
+        issues.append("NO_CHUNKS")
+    if not bundle.get("edges"):
+        issues.append("NO_EDGES")
 
     bundle["__sme_issues__"] = issues
     bundle["__sme_ok__"] = (len(issues) == 0)
@@ -38,6 +45,7 @@ def handle(table, body=None, **kwargs):
     filters = body.get("filters") or {}
     limit   = int(body.get("limit", 100))
 
+    # ---- Graph starting point ----
     if table == "graph":
         if filters:
             qs = [f"{k}={v}" for k, v in filters.items()]
@@ -87,9 +95,10 @@ def handle(table, body=None, **kwargs):
 
         return None, "Provide either 'rid' or 'filters' for graph query", {"code":"ARGS_REQUIRED"}
 
+    # ---- Doc starting point ----
     if table == "docs":
         if not rid:
-            return None, "Doc query requires 'rid'", {"code":"RID_REQUIRED"}
+            return None, "Doc query requires 'rid'", {"code": "RID_REQUIRED"}
         r = requests.get(f"{SUPABASE_URL}/rest/v1/docs?id=eq.{rid}", headers=HEADERS)
         if r.status_code != 200 or not r.json():
             return None, "Doc not found", {"code":"NOT_FOUND","id":rid}
@@ -105,4 +114,4 @@ def handle(table, body=None, **kwargs):
             "chunks": chunks_r.json() if chunks_r.status_code == 200 else []
         }), None, None
 
-    return None, "Unknown table for query", {"code":"BAD_TABLE","table":table}
+    return None, "Unknown table for query", {"code": "BAD_TABLE", "table": table}

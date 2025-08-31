@@ -1,10 +1,32 @@
+# config.py — Fixed Configuration
+
 from flask import Response, stream_with_context
-import json
+import json, os
 
-SUPABASE_URL = "YOUR_SUPABASE_URL"
-HEADERS = {"apikey": "YOUR_API_KEY"}
-TABLE_KEYS = {"graph": "id", "docs": "doc_id"}
+# --- Environment-driven configuration ---
+# Use environment variables for security + deployment flexibility.
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError(
+        "❌ Missing Supabase configuration. "
+        "Set SUPABASE_URL and SUPABASE_KEY environment variables."
+    )
+
+# Standard auth headers for Supabase REST API
+HEADERS = {
+    "apikey": SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+}
+
+# Table key mappings
+TABLE_KEYS = {
+    "graph": "id",
+    "docs": "doc_id"
+}
+
+# --- Response wrapper ---
 def wrap(data=None, echo=None, hint=None, error=None, stream=False):
     """
     Standard response wrapper for all handlers.

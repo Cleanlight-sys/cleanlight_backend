@@ -1,123 +1,108 @@
+# handlers/query.py
 import requests, json
-from flask import Response, stream_with_context
 from config import SUPABASE_URL, HEADERS, TABLE_KEYS
+
+def validate_bundle(bundle):
+    """Attach SME diagnostics so we know what's missing/malformed."""
+    issues = []
+    node = bundle.get("graph_node")
+    doc = bundle.get("doc")
+
+    if not node:
+        issues.append("MISSING_GRAPH_NODE")
+    else:
+        if not node.get("label"): issues.append("NODE_NO_LABEL")
+        if not node.get("doc_id"): issues.append("NODE_NO_DOC_ID")
+
+    if not doc:
+        issues.append("MISSING_DOC")
+    else:
+        if not doc.get("meta"): issues.append("DOC_NO_META")
+        if not doc.get("sha256"): issues.append("DOC_NO_SHA256")
+
+    if not bundle.get("chunks"): issues.append("NO_CHUNKS")
+    if not bundle.get("edges"): issues.append("NO_EDGES")
+
+    bundle["__sme_issues__"] = issues
+    bundle["__sme_ok__"] = (len(issues) == 0)
+    return bundle
+
 
 def handle(table, body=None, **kwargs):
     """
     Unified SME query handler.
-    Supports 'graph' and 'docs' starting points.
-    Tolerates extra kwargs (e.g. filters passed top-level).
+    Returns bundles + SME diagnostics.
     """
-
-    # merge kwargs into body so stray args don't break things
     body = {**(body or {}), **kwargs}
-
     rid     = body.get("rid")
     filters = body.get("filters") or {}
-    stream  = body.get("stream", False)
     limit   = int(body.get("limit", 100))
 
-    # ---- Graph starting point ----
     if table == "graph":
         if filters:
-            # Build filter querystring
             qs = [f"{k}={v}" for k, v in filters.items()]
             qs.append(f"limit={limit}")
             url = f"{SUPABASE_URL}/rest/v1/graph?{'&'.join(qs)}"
             r = requests.get(url, headers=HEADERS)
             if r.status_code != 200:
-                return None, "Graph filter query failed", {"code":"GRAPH_FILTER_FAIL","detail":r.text}
+                return None, "Graph filter query failed", {"code": "GRAPH_FILTER_FAIL", "detail": r.text}
+
             nodes = r.json()
             if not nodes:
-                return None, "No matching graph nodes", {"code":"NO_MATCH"}
+                return None, "No matching graph nodes", {"code": "NO_MATCH"}
 
-            bundles = []
-            for node in nodes:
-                doc_id = node.get("doc_id")
-                node_id = node.get("id")
-
-                doc_url    = f"{SUPABASE_URL}/rest/v1/docs?id=eq.{doc_id}"
-                edges_url  = f"{SUPABASE_URL}/rest/v1/edges?src_id=eq.{node_id}"
-                chunks_url = f"{SUPABASE_URL}/rest/v1/chunks?doc_id=eq.{doc_id}"
-
-                doc_r    = requests.get(doc_url, headers=HEADERS)
-                edges_r  = requests.get(edges_url, headers=HEADERS)
-                chunks_r = requests.get(chunks_url, headers=HEADERS)
-
-                bundles.append({
-                    "graph_node": node,
-                    "doc": doc_r.json()[0] if doc_r.status_code == 200 and doc_r.json() else None,
-                    "edges": edges_r.json() if edges_r.status_code == 200 else [],
-                    "chunks": chunks_r.json() if chunks_r.status_code == 200 else []
-                })
-
-            # --- Streaming mode ---
-            if stream:
-                def generate():
-                    yield '{"data":['
-                    first = True
-                    for b in bundles:
-                        if not first:
-                            yield ','
-                        yield json.dumps(b)
-                        first = False
-                    yield ']}'
-                return Response(stream_with_context(generate()), mimetype="application/json")
-
-            return bundles, None, None
+            def gen():
+                for node in nodes:
+                    doc_id = node.get("doc_id")
+                    node_id = node.get("id")
+                    doc_r    = requests.get(f"{SUPABASE_URL}/rest/v1/docs?id=eq.{doc_id}", headers=HEADERS)
+                    edges_r  = requests.get(f"{SUPABASE_URL}/rest/v1/edges?src_id=eq.{node_id}", headers=HEADERS)
+                    chunks_r = requests.get(f"{SUPABASE_URL}/rest/v1/chunks?doc_id=eq.{doc_id}", headers=HEADERS)
+                    yield validate_bundle({
+                        "graph_node": node,
+                        "doc": doc_r.json()[0] if doc_r.status_code == 200 and doc_r.json() else None,
+                        "edges": edges_r.json() if edges_r.status_code == 200 else [],
+                        "chunks": chunks_r.json() if chunks_r.status_code == 200 else []
+                    })
+            return gen(), None, None
 
         elif rid:
-            # Single graph node lookup
             key_col = TABLE_KEYS.get("graph", "id")
             url = f"{SUPABASE_URL}/rest/v1/graph?{key_col}=eq.{rid}"
             r = requests.get(url, headers=HEADERS)
             if r.status_code != 200 or not r.json():
-                return None, "Graph node not found", {"code":"NOT_FOUND","id":rid}
+                return None, "Graph node not found", {"code": "NOT_FOUND", "id": rid}
             node = r.json()[0]
-
             doc_id = node.get("doc_id")
+            doc_r    = requests.get(f"{SUPABASE_URL}/rest/v1/docs?id=eq.{doc_id}", headers=HEADERS)
+            edges_r  = requests.get(f"{SUPABASE_URL}/rest/v1/edges?src_id=eq.{node['id']}", headers=HEADERS)
+            chunks_r = requests.get(f"{SUPABASE_URL}/rest/v1/chunks?doc_id=eq.{doc_id}", headers=HEADERS)
 
-            doc_url    = f"{SUPABASE_URL}/rest/v1/docs?id=eq.{doc_id}"
-            edges_url  = f"{SUPABASE_URL}/rest/v1/edges?src_id=eq.{node['id']}"
-            chunks_url = f"{SUPABASE_URL}/rest/v1/chunks?doc_id=eq.{doc_id}"
-
-            doc_r    = requests.get(doc_url, headers=HEADERS)
-            edges_r  = requests.get(edges_url, headers=HEADERS)
-            chunks_r = requests.get(chunks_url, headers=HEADERS)
-
-            return {
+            return validate_bundle({
                 "graph_node": node,
                 "doc": doc_r.json()[0] if doc_r.status_code == 200 and doc_r.json() else None,
                 "edges": edges_r.json() if edges_r.status_code == 200 else [],
                 "chunks": chunks_r.json() if chunks_r.status_code == 200 else []
-            }, None, None
+            }), None, None
 
-        else:
-            return None, "Provide either 'rid' or 'filters' for graph query", {"code":"ARGS_REQUIRED"}
+        return None, "Provide either 'rid' or 'filters' for graph query", {"code":"ARGS_REQUIRED"}
 
-    # ---- Doc starting point ----
     if table == "docs":
         if not rid:
             return None, "Doc query requires 'rid'", {"code":"RID_REQUIRED"}
-        url = f"{SUPABASE_URL}/rest/v1/docs?id=eq.{rid}"
-        r = requests.get(url, headers=HEADERS)
+        r = requests.get(f"{SUPABASE_URL}/rest/v1/docs?id=eq.{rid}", headers=HEADERS)
         if r.status_code != 200 or not r.json():
             return None, "Doc not found", {"code":"NOT_FOUND","id":rid}
         doc = r.json()[0]
+        graph_r  = requests.get(f"{SUPABASE_URL}/rest/v1/graph?doc_id=eq.{rid}", headers=HEADERS)
+        edges_r  = requests.get(f"{SUPABASE_URL}/rest/v1/edges?doc_id=eq.{rid}", headers=HEADERS)
+        chunks_r = requests.get(f"{SUPABASE_URL}/rest/v1/chunks?doc_id=eq.{rid}", headers=HEADERS)
 
-        graph_url  = f"{SUPABASE_URL}/rest/v1/graph?doc_id=eq.{rid}"
-        edges_url  = f"{SUPABASE_URL}/rest/v1/edges?doc_id=eq.{rid}"
-        chunks_url = f"{SUPABASE_URL}/rest/v1/chunks?doc_id=eq.{rid}"
-
-        graph_r  = requests.get(graph_url, headers=HEADERS)
-        edges_r  = requests.get(edges_url, headers=HEADERS)
-        chunks_r = requests.get(chunks_url, headers=HEADERS)
-
-        return {
+        return validate_bundle({
             "doc": doc,
             "graph_nodes": graph_r.json() if graph_r.status_code == 200 else [],
             "edges": edges_r.json() if edges_r.status_code == 200 else [],
             "chunks": chunks_r.json() if chunks_r.status_code == 200 else []
-        }, None, None
+        }), None, None
 
     return None, "Unknown table for query", {"code":"BAD_TABLE","table":table}

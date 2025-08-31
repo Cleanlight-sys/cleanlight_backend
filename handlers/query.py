@@ -1,8 +1,8 @@
-# handlers/query.py — Instant SME Engine (uniform bundles)
+# handlers/query.py — Instant SME Engine (Uniform Bundles + Filters_str)
 
 import requests, json
 from urllib.parse import quote_plus
-from config import SUPABASE_URL, HEADERS, wrap  # TABLE_KEYS not needed here
+from config import SUPABASE_URL, HEADERS, wrap
 
 # ---------------------- helpers
 
@@ -72,7 +72,7 @@ def _make_bundle(node=None, doc=None, chunks=None, edges=None):
         "edges": edges or []
     })
 
-# ---------------------- bundle builders (with optional chunk text truncation)
+# ---------------------- bundle builders
 
 def _truncate_chunks(chunks, max_chars):
     if not max_chars: return chunks or []
@@ -121,12 +121,21 @@ def _bundle_from_doc_row(drow, chunk_limit=1000, edge_limit=500, chunk_text_max=
 
 def handle(table, body, **kwargs):
     echo   = {"table": table, "body": body}
-    rid    = body.get("rid")                # optional for graph/docs
+    rid    = body.get("rid")
     filters= body.get("filters") or {}
-    q      = body.get("q")                  # lightweight text search
+    filters_str = body.get("filters_str")
+    q      = body.get("q")
     limit  = int(body.get("limit", 100))
     stream = bool(body.get("stream", False))
-    chunk_text_max = body.get("chunk_text_max")  # int or None
+    chunk_text_max = body.get("chunk_text_max")
+
+    # Parse filters_str fallback
+    if filters_str and not filters:
+        filters = {}
+        for pair in filters_str.split("&"):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                filters[k] = v
 
     if not rid and not filters and not q:
         return None, "Provide 'filters' or 'q' (rid optional for graph/docs).", {
@@ -140,7 +149,7 @@ def handle(table, body, **kwargs):
         elif table == "edges": pairs.append(f"etype=ilike.*{quote_plus(q)}*")
     pairs.append(f"limit={limit}")
 
-    # ---- graph SME (rid | filters | q)
+    # ---- graph SME
     if table == "graph":
         rows, err = (_get_by_id("graph", rid, key="id",
                                 select="id,doc_id,ntype,label,page,data")
@@ -152,12 +161,11 @@ def handle(table, body, **kwargs):
         def gen():
             for r in (rows or []):
                 b = _bundle_from_graph_row(r, chunk_text_max=chunk_text_max)
-                if b is not None:  # safety for streaming
-                    yield b
+                if b: yield b
 
         return wrap(gen(), echo=echo, stream=True) if stream else ([b for b in gen()], None, None)
 
-    # ---- docs SME (rid | filters | q)
+    # ---- docs SME
     if table == "docs":
         rows, err = (_get_by_id("docs", rid, key="doc_id",
                                 select="doc_id,title,meta,sha256")
@@ -169,39 +177,28 @@ def handle(table, body, **kwargs):
         def gen():
             for d in (rows or []):
                 for b in _bundle_from_doc_row(d, chunk_text_max=chunk_text_max):
-                    if b is not None:
-                        yield b
+                    if b: yield b
 
         return wrap(gen(), echo=echo, stream=True) if stream else ([b for b in gen()], None, None)
 
-    # ---- edges SME (filters | q only; normalize to bundles)
+    # ---- edges SME
     if table == "edges":
         if rid:
-            return None, "Edges do not support 'rid'; use filters or q", {"code": "BAD_ARGS", "table": "edges"}
+            return None, "Edges do not support 'rid'; use filters/q/filters_str", {"code": "BAD_ARGS", "table": "edges"}
 
         rows, err = _get_table("edges", pairs, select="doc_id,src_id,dst_id,etype")
         if err: return None, "Edges query failed", {"code": "EDGES_QUERY_FAIL", **err}
 
         def gen():
             for e in (rows or []):
-                # expand src endpoint
-                src_id = e.get("src_id")
-                if src_id is not None:
-                    src_node, _ = _get_by_id("graph", src_id, key="id",
-                                             select="id,doc_id,ntype,label,page,data")
-                    if src_node:
-                        b = _bundle_from_graph_row(src_node[0], chunk_text_max=chunk_text_max)
-                        if b is not None:
-                            yield b
-                # expand dst endpoint
-                dst_id = e.get("dst_id")
-                if dst_id is not None:
-                    dst_node, _ = _get_by_id("graph", dst_id, key="id",
-                                             select="id,doc_id,ntype,label,page,data")
-                    if dst_node:
-                        b = _bundle_from_graph_row(dst_node[0], chunk_text_max=chunk_text_max)
-                        if b is not None:
-                            yield b
+                for endpoint in ("src_id","dst_id"):
+                    node_id = e.get(endpoint)
+                    if node_id is not None:
+                        n, _ = _get_by_id("graph", node_id, key="id",
+                                          select="id,doc_id,ntype,label,page,data")
+                        if n:
+                            b = _bundle_from_graph_row(n[0], chunk_text_max=chunk_text_max)
+                            if b: yield b
 
         return wrap(gen(), echo=echo, stream=True) if stream else ([b for b in gen()], None, None)
 

@@ -1,4 +1,4 @@
-# schema/paths_query.py — SME-aware OpenAPI spec
+# schema/paths_query.py — SME-aware OpenAPI spec (description trimmed)
 
 def get():
     return {
@@ -6,10 +6,9 @@ def get():
             "post": {
                 "summary": "Unified query endpoint (CRUD + SME)",
                 "description": (
-                    "Handles read, write, update, delete, and SME queries against docs, graph, chunks, edges.\n"
-                    "For CRUD actions, payloads must include required fields (rid, payload, etc.).\n"
-                    "For SME queries (action=query), you can discover bundles via filters, q (text search), or rid.\n"
-                    "SME bundles include docs, graph nodes, edges, and chunks, plus validation diagnostics."
+                    "Handles CRUD and SME queries on docs, graph, chunks, edges. "
+                    "For CRUD, include required fields (rid, payload). "
+                    "For SME, use filters, q, or rid to fetch bundles with docs, graph, edges, chunks."
                 ),
                 "operationId": "query",
                 "requestBody": {
@@ -38,12 +37,12 @@ def get():
                                     },
                                     "rid": {
                                         "type": "string",
-                                        "description": "Record ID (required for some CRUD ops; optional for SME queries)"
+                                        "description": "Record ID (optional for SME, required for some CRUD)"
                                     },
                                     "filters": {
                                         "type": "object",
                                         "additionalProperties": {"type": "string"},
-                                        "description": "Filter dict (PostgREST operators allowed, e.g., {'label': 'ilike.*felt*'})"
+                                        "description": "PostgREST filter dict, e.g. {\"label\":\"ilike.*felt*\"}"
                                     },
                                     "payload": {
                                         "type": "object",
@@ -55,16 +54,16 @@ def get():
                                     },
                                     "q": {
                                         "type": "string",
-                                        "description": "Lightweight text query for SME discovery (e.g., matches label/title)"
+                                        "description": "Lightweight text search for SME (label/title)"
                                     },
                                     "depth": {
                                         "type": "integer",
-                                        "description": "Number of edge hops to traverse outward (SME query only)",
+                                        "description": "Edge hops to traverse (SME only)",
                                         "default": 0
                                     },
                                     "limit": {
                                         "type": "integer",
-                                        "description": "Maximum number of records to return",
+                                        "description": "Max records to return",
                                         "default": 100
                                     },
                                     "stream": {
@@ -80,11 +79,13 @@ def get():
                 },
                 "responses": {
                     "200": {
-                        "description": "Wrapped response. For SME queries, returns one or more bundles:\n"
-                                       "{ 'node':..., 'doc':..., 'chunks':[...], 'edges':[...], '__sme_ok__':bool, '__sme_issues__':[...] }"
+                        "description": (
+                            "Standard wrapped response. "
+                            "For SME queries, returns bundles with docs, graph, chunks, edges, and validation flags."
+                        )
                     },
                     "400": {
-                        "description": "Invalid input, with hint examples"
+                        "description": "Invalid input; may include example hints"
                     }
                 }
             }

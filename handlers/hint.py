@@ -7,6 +7,7 @@ def handle(body):
     echo = {"original_body": body}
 
     examples = {
+        # ---- CRUD actions ----
         "read_all": {
             "action": "read_all",
             "table": "graph",
@@ -37,10 +38,39 @@ def handle(body):
             "table": "docs",
             "rid": "123"
         },
-        "query": {
+
+        # ---- SME Query engine examples ----
+        "query_graph_q": {
             "action": "query",
             "table": "graph",
-            "filters": {"label": "ilike.*beaver*"},
+            "q": "beaver felt",
+            "filters": {"ntype": "eq.concept"},
+            "limit": 50,
+            "stream": True
+        },
+        "query_graph_filters": {
+            "action": "query",
+            "table": "graph",
+            "filters": {"label": "ilike.*rabbit*"},
+            "limit": 20
+        },
+        "query_docs_q": {
+            "action": "query",
+            "table": "docs",
+            "q": "felt",
+            "limit": 10
+        },
+        "query_edges": {
+            "action": "query",
+            "table": "edges",
+            "filters": {"etype": "ilike.*contrasts_with*"},
+            "stream": True
+        },
+        "query_traverse": {
+            "action": "query",
+            "table": "graph",
+            "q": "beaver",
+            "depth": 1,
             "stream": True
         }
     }
@@ -50,6 +80,8 @@ def handle(body):
     elif target in examples:
         return {"examples": {target: examples[target]}}, None, None
     else:
-        return None, "Valid targets: read_all, read_row, write, update, delete, query, all", {
-            "code": "INVALID_HINT_TARGET"
-        }
+        return None, (
+            "Valid targets: "
+            + ", ".join(sorted(examples.keys()))
+            + " or 'all'"
+        ), {"code": "INVALID_HINT_TARGET"}

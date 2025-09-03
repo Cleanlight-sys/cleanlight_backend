@@ -1,3 +1,40 @@
+'''
+# Pseudocode (concise)
+# 1) Provide a singleton MiniLM model loader (configurable model/device).
+# 2) Expose `embed_texts(texts, batch_size=..., normalize=True)` → np.ndarray (N, 384).
+# 3) Include L2 normalization and safe handling of empty/None items.
+# 4) Optional CLI: read TXT/JSONL, embed in batches, write JSONL or .npy.
+# 5) Ready for import in jobs/embed_chunks.py: `from jobs.embed_minilm import embed_texts`.
+
+# ===============================
+# path: requirements.txt (single-file, py-version agnostic)
+# ===============================
+# Core backend
+Flask==3.0.0
+flask-cors==4.0.0
+requests==2.31.0
+gunicorn==21.2.0
+
+# Optional compression helper (skip on 3.13+ to avoid build)
+zstandard==0.22.0 ; python_version < "3.13"
+
+# FastAPI aux router (/catalog, /map)
+fastapi==0.110.0
+uvicorn[standard]==0.29.0
+pydantic==2.7.1
+
+# MiniLM embedding stack (installs only on <3.13; 3.13 deploys will skip these)
+sentence-transformers==2.6.1 ; python_version < "3.13"
+torch==2.2.1 ; python_version < "3.13"
+numpy==1.26.4
+scipy==1.11.4
+
+# Utilities & tests
+tqdm==4.66.2
+orjson==3.10.0
+pytest==8.1.1
+httpx==0.27.0
+
 # ===============================
 # path: jobs/embed_minilm.py
 # ===============================
@@ -27,6 +64,7 @@ Why a tiny wrapper?
 - Consistent normalization.
 - Predictable batching and error handling for dirty text.
 """
+'''
 from __future__ import annotations
 
 import argparse

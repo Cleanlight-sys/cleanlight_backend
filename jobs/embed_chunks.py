@@ -1,4 +1,5 @@
-# path: jobs/embed_chunks.py
+'''
+path: jobs/embed_chunks.py
 """
 Embed missing vectors via backend /query API using MiniLM helper.
 
@@ -24,6 +25,7 @@ Tables supported (defaults):
 
 NOTE: Adjust fields if your schema differs; CLI flags override defaults.
 """
+'''
 from __future__ import annotations
 
 import argparse

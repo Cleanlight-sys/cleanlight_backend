@@ -1,6 +1,28 @@
-Flask
-requests
-gunicorn
-zstandard
-flask-cors
+# === Core backend ===
+Flask>=3.0.0
+flask-cors>=4.0.0
+requests>=2.31.0
+gunicorn>=21.2.0
+zstandard>=0.22.0
 
+# === FastAPI aux router (for /catalog, /map) ===
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+
+# === Data models / validation (FastAPI depends on this) ===
+pydantic>=2.7.0
+
+# === MiniLM embedding path (optional; enable jobs/embed_chunks.py) ===
+sentence-transformers>=2.6.1
+# CPU-only Torch is fine unless you need CUDA; adjust if you want GPU wheels
+torch>=2.2.0
+numpy>=1.26.0
+scipy>=1.11.0
+
+# === Job runner & JSON perf (optional but handy) ===
+tqdm>=4.66.0
+orjson>=3.9.0
+
+# === Test tools (optional) ===
+pytest>=8.0.0
+httpx>=0.27.0

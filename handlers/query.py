@@ -1,206 +1,117 @@
-# handlers/query.py — Instant SME Engine (Uniform Bundles + Filters_str)
+# handlers/query.py
+"""
+Central Instant-SME query handler with:
+- Early limiting at the DB boundary (prevents ResponseTooLargeError)
+- Pass-through of `filters` and `filters_str`
+- Optional chunk text truncation via `chunk_text_max`
+- Light special-casing for graph label lookups (q="seam")
+"""
+from __future__ import annotations
 
-import requests, json
-from urllib.parse import quote_plus
-from config import SUPABASE_URL, HEADERS, wrap
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+import os
+import re
 
-# ---------------------- helpers
+# Get Supabase/PostgREST client
+try:
+    from utils.schema import get_supabase  # project helper
+except Exception:  # pragma: no cover
+    def get_supabase():
+        from supabase import create_client
+        url = os.environ["SUPABASE_URL"]
+        key = os.environ["SUPABASE_KEY"]
+        return create_client(url, key)
 
-def _qs(pairs): return "&".join(pairs)
 
-def _filter_pairs(filters: dict):
-    pairs = []
-    for k, v in (filters or {}).items():
-        if isinstance(v, str) and any(v.startswith(op) for op in
-            ["eq.", "ilike.", "cs.", "fts.", "gt.", "gte.", "lt.", "lte.", "neq."]):
-            pairs.append(f"{quote_plus(k)}={quote_plus(v)}")
+ALLOWED_TABLES = {"docs", "chunks", "graph", "edges", "images", "kcs", "bundle"}
+
+
+def _apply_filter_pair(q, col: str, op: str, val: str):
+    op = op.lower()
+    if op in {"eq", "neq", "gt", "gte", "lt", "lte", "like", "ilike", "is", "cs", "cd", "ov", "fts", "plfts", "phfts", "wfts"}:
+        return q.filter(col, op, val)
+    # fallback: equality
+    return q.eq(col, val)
+
+
+def _parse_filters_str(filters_str: str) -> List[Tuple[str, str, str]]:
+    # e.g., label=ilike.%seam%&doc_id=eq.f0d296...
+    out: List[Tuple[str, str, str]] = []
+    if not filters_str:
+        return out
+    for pair in filters_str.split("&"):
+        if not pair or "=" not in pair:
+            continue
+        col, rhs = pair.split("=", 1)
+        if "." in rhs:
+            op, val = rhs.split(".", 1)
         else:
-            pairs.append(f"{quote_plus(k)}=eq.{quote_plus(str(v))}")
-    return pairs
-
-def _supa_get(path_qs):
-    url = f"{SUPABASE_URL}/rest/v1/{path_qs}"
-    r = requests.get(url, headers=HEADERS)
-    if r.status_code != 200:
-        return None, {"code": "SUPABASE_GET_FAIL", "status": r.status_code, "detail": r.text}
-    try:
-        return r.json(), None
-    except Exception as e:
-        return None, {"code": "JSON_PARSE_FAIL", "detail": str(e)}
-
-def _get_table(table, pairs, select="*"):
-    qs = f"{table}?select={quote_plus(select)}"
-    if pairs: qs = f"{qs}&{_qs(pairs)}"
-    return _supa_get(qs)
-
-def _get_by_id(table, rid, key="id", select="*"):
-    pairs = [f"{quote_plus(key)}=eq.{quote_plus(str(rid))}"]
-    return _get_table(table, pairs, select)
-
-def _get_edges_by_node_id(node_id, limit=500):
-    pairs = [f"or=(src_id.eq.{node_id},dst_id.eq.{node_id})", f"limit={int(limit)}"]
-    return _get_table("edges", pairs, select="doc_id,src_id,dst_id,etype")
-
-def _get_chunks_for_doc(doc_id, limit=1000):
-    pairs = [f"doc_id=eq.{quote_plus(str(doc_id))}", f"limit={int(limit)}"]
-    return _get_table("chunks", pairs, select="doc_id,page_from,page_to,text,sha256")
-
-def _get_graph_for_doc(doc_id, limit=1000):
-    pairs = [f"doc_id=eq.{quote_plus(str(doc_id))}", f"limit={int(limit)}"]
-    return _get_table("graph", pairs, select="id,doc_id,ntype,label,page,data")
-
-# ---------------------- bundle validation
-
-def _validate_bundle(bundle):
-    issues, ok = [], True
-    node, doc = bundle.get("node"), bundle.get("doc")
-    if node and not node.get("label"): issues.append("graph.node missing label"); ok = False
-    if node and not node.get("doc_id"): issues.append("graph.node missing doc_id"); ok = False
-    if doc and "meta" not in doc:       issues.append("doc missing meta"); ok = False
-    if doc and "sha256" not in doc:     issues.append("doc missing sha256"); ok = False
-    if not bundle.get("chunks"):        issues.append("no chunks")
-    if bundle.get("edges") is None:     issues.append("edges missing (should be [])"); ok = False
-    bundle["__sme_ok__"] = ok
-    bundle["__sme_issues__"] = issues
-    return bundle
-
-def _make_bundle(node=None, doc=None, chunks=None, edges=None):
-    return _validate_bundle({
-        "node": node,
-        "doc": doc,
-        "chunks": chunks or [],
-        "edges": edges or []
-    })
-
-# ---------------------- bundle builders
-
-def _truncate_chunks(chunks, max_chars):
-    if not max_chars: return chunks or []
-    out = []
-    for c in (chunks or []):
-        t = c.get("text")
-        if isinstance(t, str) and len(t) > max_chars:
-            c = {**c, "text": t[:max_chars] + "…"}
-        out.append(c)
+            op, val = "eq", rhs
+        out.append((col, op, val))
     return out
 
-def _bundle_from_graph_row(grow, chunk_limit=1000, edge_limit=500, chunk_text_max=None):
-    doc_id = grow.get("doc_id")
-    doc, _ = _get_by_id("docs", doc_id, key="doc_id", select="doc_id,title,meta,sha256")
-    doc_row = (doc or [None])[0]
-    chunks, _ = _get_chunks_for_doc(doc_id, limit=chunk_limit)
-    edges, _  = _get_edges_by_node_id(grow.get("id"), limit=edge_limit)
-    return _make_bundle(
-        node=grow,
-        doc=doc_row,
-        chunks=_truncate_chunks(chunks, chunk_text_max),
-        edges=edges or []
-    )
 
-def _bundle_from_doc_row(drow, chunk_limit=1000, edge_limit=500, chunk_text_max=None):
-    doc_id = drow.get("doc_id")
-    chunks, _ = _get_chunks_for_doc(doc_id, limit=chunk_limit)
-    gnodes, _ = _get_graph_for_doc(doc_id, limit=1000)
-    edges_union = []
-    if gnodes:
-        for n in gnodes:
-            e, _ = _get_edges_by_node_id(n.get("id"), limit=edge_limit)
-            if e: edges_union.extend(e)
-    if gnodes:
-        for n in gnodes:
-            yield _make_bundle(
-                node=n,
-                doc=drow,
-                chunks=_truncate_chunks(chunks, chunk_text_max),
-                edges=[e for e in edges_union if e["src_id"] == n["id"] or e["dst_id"] == n["id"]]
-            )
-    else:
-        yield _make_bundle(node=None, doc=drow, chunks=_truncate_chunks(chunks, chunk_text_max), edges=[])
+def _shorten_chunks(rows: List[Dict[str, Any]], max_len: int) -> None:
+    if not rows or not max_len:
+        return
+    for r in rows:
+        t = r.get("text")
+        if isinstance(t, str) and len(t) > max_len:
+            r["text"] = t[:max_len] + "…"
 
-# ---------------------- main handler
 
-def handle(table, body, **kwargs):
-    echo   = {"table": table, "body": body}
-    rid    = body.get("rid")
-    filters= body.get("filters") or {}
-    filters_str = body.get("filters_str")
-    q      = body.get("q")
-    limit  = int(body.get("limit", 100))
-    stream = bool(body.get("stream", False))
-    chunk_text_max = body.get("chunk_text_max")
+def handle(table: str, body: Dict[str, Any], **kwargs) -> Tuple[List[Dict[str, Any]], Optional[str], Dict[str, Any]]:
+    if table not in ALLOWED_TABLES:
+        return [], f"Table not allowed: {table}", {}
 
-    # Parse filters_str fallback
-    if filters_str and not filters:
-        filters = {}
-        for pair in filters_str.split("&"):
-            if "=" in pair:
-                k, v = pair.split("=", 1)
-                filters[k] = v
+    q_text: Optional[str] = body.get("q")
+    limit: int = max(1, int(body.get("limit") or 50))
+    filters: Dict[str, Any] = body.get("filters") or {}
+    filters_str: Optional[str] = body.get("filters_str")
+    chunk_text_max: int = int(body.get("chunk_text_max") or 0)
 
-    if not rid and not filters and not q:
-        return None, "Provide 'filters' or 'q' (rid optional for graph/docs).", {
-            "code": "ARGS_REQUIRED", "need": ["filters|q|rid"], "table": table
-        }
+    db = get_supabase()
 
-    pairs = _filter_pairs(filters)
-    if q:
-        if table == "graph": pairs.append(f"label=ilike.*{quote_plus(q)}*")
-        elif table == "docs": pairs.append(f"title=ilike.*{quote_plus(q)}*")
-        elif table == "edges": pairs.append(f"etype=ilike.*{quote_plus(q)}*")
-    pairs.append(f"limit={limit}")
+    # --- special-case: graph label lookup like q="seam" ---------------------
+    if table == "graph" and q_text and not filters and not filters_str:
+        query = db.table("graph").select("id,label,doc_id,page,ntype").ilike("label", f"%{q_text}%").limit(limit)
+        res = query.execute()
+        data = getattr(res, "data", None) or res.get("data")  # supabase v2 compat
+        return data or [], None, {"limited": True, "count": len(data or [])}
 
-    # ---- graph SME
-    if table == "graph":
-        rows, err = (_get_by_id("graph", rid, key="id",
-                                select="id,doc_id,ntype,label,page,data")
-                     if rid else
-                     _get_table("graph", pairs,
-                                select="id,doc_id,ntype,label,page,data"))
-        if err: return None, "Graph query failed", {"code": "GRAPH_QUERY_FAIL", **err}
+    # --- general path --------------------------------------------------------
+    query = db.table(table).select("*").limit(limit)
 
-        def gen():
-            for r in (rows or []):
-                b = _bundle_from_graph_row(r, chunk_text_max=chunk_text_max)
-                if b: yield b
+    # FTS via q_text shortcuts when present
+    if q_text:
+        # Prefer weighted FTS on common columns
+        if table == "chunks":
+            query = query.filter("text", "wfts", q_text)  # websearch_to_tsquery
+        elif table == "kcs":
+            # Search in q + a_ref text cast
+            query = query.or_(f"q.wfts.{q_text},a_ref.wfts.{q_text}")
+        elif table == "docs":
+            query = query.filter("title", "ilike", f"%{q_text}%")
+        elif table == "graph":
+            query = query.filter("label", "ilike", f"%{q_text}%")
 
-        return wrap(gen(), echo=echo, stream=True) if stream else ([b for b in gen()], None, None)
+    # Structured filters dict
+    if filters:
+        for col, spec in filters.items():
+            if isinstance(spec, str) and "." in spec:
+                op, val = spec.split(".", 1)
+                query = _apply_filter_pair(query, col, op, val)
+            else:
+                query = query.eq(col, spec)
 
-    # ---- docs SME
-    if table == "docs":
-        rows, err = (_get_by_id("docs", rid, key="doc_id",
-                                select="doc_id,title,meta,sha256")
-                     if rid else
-                     _get_table("docs", pairs,
-                                select="doc_id,title,meta,sha256"))
-        if err: return None, "Docs query failed", {"code": "DOCS_QUERY_FAIL", **err}
+    # Raw filters string
+    for col, op, val in _parse_filters_str(filters_str or ""):
+        query = _apply_filter_pair(query, col, op, val)
 
-        def gen():
-            for d in (rows or []):
-                for b in _bundle_from_doc_row(d, chunk_text_max=chunk_text_max):
-                    if b: yield b
+    res = query.execute()
+    rows = getattr(res, "data", None) or res.get("data") or []
 
-        return wrap(gen(), echo=echo, stream=True) if stream else ([b for b in gen()], None, None)
+    if table == "chunks" and chunk_text_max:
+        _shorten_chunks(rows, chunk_text_max)
 
-    # ---- edges SME
-    if table == "edges":
-        if rid:
-            return None, "Edges do not support 'rid'; use filters/q/filters_str", {"code": "BAD_ARGS", "table": "edges"}
-
-        rows, err = _get_table("edges", pairs, select="doc_id,src_id,dst_id,etype")
-        if err: return None, "Edges query failed", {"code": "EDGES_QUERY_FAIL", **err}
-
-        def gen():
-            for e in (rows or []):
-                for endpoint in ("src_id","dst_id"):
-                    node_id = e.get(endpoint)
-                    if node_id is not None:
-                        n, _ = _get_by_id("graph", node_id, key="id",
-                                          select="id,doc_id,ntype,label,page,data")
-                        if n:
-                            b = _bundle_from_graph_row(n[0], chunk_text_max=chunk_text_max)
-                            if b: yield b
-
-        return wrap(gen(), echo=echo, stream=True) if stream else ([b for b in gen()], None, None)
-
-    # ---- unknown
-    return None, "Unknown table", {"code": "BAD_TABLE", "table": table}
+    return rows, None, {"limited": True, "count": len(rows)}

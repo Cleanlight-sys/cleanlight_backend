@@ -25,10 +25,11 @@ def _now():
 @app.get("/openapi.json")
 @app.get("/openai.json")  # alias
 
-"""OpenAI Action shim: forwards body directly to handlers.query.handle.
-- Accepts filters, filters_str, chunk_text_max.
-- Keeps Action payloads small and safe.
-"""
+#"""OpenAI Action shim: forwards body directly to handlers.query.handle.
+#- Accepts filters, filters_str, chunk_text_max.
+#- Keeps Action payloads small and safe.
+#"""
+
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Literal
@@ -118,4 +119,5 @@ def hint_gate():
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 

@@ -3,6 +3,13 @@ from flask_cors import CORS
 from datetime import datetime, timezone
 import os, requests, json
 
+# cleanlight_backend_onrender_com__jit_plugin/query.py (with /ask)
+# Drop-in replacement for the existing shim. Includes /query + /ask.
+from __future__ import annotations
+from typing import Any, Dict, Optional, Literal, List, Tuple
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+from handlers.query import handle  # central Instant-SME query engine
 import handlers.read_all as read_all
 import handlers.read_rows as read_row
 import handlers.write as write
@@ -119,6 +126,7 @@ def hint_gate():
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+
 
 
 

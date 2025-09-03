@@ -21,11 +21,14 @@ torch==2.2.1 ; python_version < "3.13"
 # NumPy is fine as-is on 3.13 (it built for you). Leave it if you need it.
 numpy==1.26.4
 
+'''
 # ❗ SciPy is what’s failing; gate it off (or delete this line entirely)
 scipy==1.11.4 ; python_version < "3.13"
+'''
 
 # Utilities
 tqdm==4.66.2
 orjson==3.10.0
 pytest==8.1.1
 httpx==0.27.0
+

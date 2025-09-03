@@ -24,6 +24,40 @@ def _now():
 # --- Schema endpoints ---
 @app.get("/openapi.json")
 @app.get("/openai.json")  # alias
+
+"""OpenAI Action shim: forwards body directly to handlers.query.handle.
+- Accepts filters, filters_str, chunk_text_max.
+- Keeps Action payloads small and safe.
+"""
+from __future__ import annotations
+
+from typing import Any, Dict, Optional, Literal
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
+
+from handlers.query import handle
+
+router = APIRouter()
+
+class QueryBody(BaseModel):
+    action: Literal["query"]
+    table: Literal["docs","chunks","graph","edges","images","kcs","bundle"]
+    q: Optional[str] = None
+    limit: Optional[int] = Field(50, ge=1, le=500)
+    filters: Optional[Dict[str, Any]] = None
+    filters_str: Optional[str] = None
+    chunk_text_max: Optional[int] = Field(600, ge=64, le=5000)
+
+@router.post("/query")
+def query(body: QueryBody):
+    payload = body.dict(exclude_none=True)
+    payload.pop("action", None)
+    table = payload.pop("table")
+    data, err, meta = handle(table, payload)
+    if err:
+        raise HTTPException(400, err)
+    return {"data": data, "meta": meta}
+
 def serve_openapi():
     """
     Serve OpenAPI schema dynamically (rebuilt from schema/ each time).
@@ -84,3 +118,4 @@ def hint_gate():
 
 if __name__ == "__main__":
     app.run(debug=True, port=8000)
+

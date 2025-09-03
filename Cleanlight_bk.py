@@ -1,4 +1,4 @@
-# Cleanlight_bk.py — Lean WSGI app, dynamic /openapi.json, static /schema endpoint
+# Cleanlight_bk.py — Lean WSGI app, dynamic /openapi.json, static /schema endpoint (robust)
 
 import json
 import hashlib
@@ -10,7 +10,6 @@ from flask_cors import CORS
 
 from config import wrap
 from schema import build_spec
-import schema.base as schema_base
 from handlers import read_all, read_rows, write, update, delete, query, hint
 
 app = Flask(__name__)
@@ -50,12 +49,42 @@ def openapi_spec() -> Response:
     return _spec_response()
 
 
-# -------- Static base schema endpoint --------
+# -------- Static base schema endpoint (robust to base style) --------
 @app.get("/schema")
 def schema_get() -> Response:
-    """Return the committed base schema (stable over time)."""
-    base = schema_base.get()  # pure dict
-    payload = json.dumps(base, ensure_ascii=False, separators=(",", ":"))
+    """Return the committed base schema.
+    Works whether `schema/base.py` exposes `get()` or a `base` dict.
+    """
+    base_schema = None
+
+    # Try function export first
+    try:
+        from schema.base import get as get_base  # type: ignore
+        base_schema = get_base()
+    except Exception:
+        base_schema = None
+
+    # Fallback to dict export
+    if base_schema is None:
+        try:
+            from schema.base import base as base_obj  # type: ignore
+            base_schema = base_obj
+        except Exception as e:
+            # Clear, JSON error (helps diagnose 500s)
+            return (
+                jsonify({
+                    "error": "Missing base schema",
+                    "detail": "schema.base must export `get()` or `base`",
+                    "exception": str(e),
+                }),
+                500,
+            )
+
+    try:
+        payload = json.dumps(base_schema, ensure_ascii=False, separators=(",", ":"))
+    except Exception as e:
+        return jsonify({"error": "Base schema is not JSON-serializable", "exception": str(e)}), 500
+
     return Response(payload, status=200, mimetype="application/json")
 
 
@@ -63,6 +92,7 @@ def schema_get() -> Response:
 @app.get("/")
 def root() -> Tuple[Response, int]:
     return jsonify({"ok": True, "service": "cleanlight-backend"}), 200
+
 
 @app.get("/_healthz")
 def healthz() -> Tuple[Response, int]:

@@ -1,93 +1,63 @@
-# schema/paths_query.py — SME-aware OpenAPI spec (description trimmed)
+# schema/paths_query.py — Low-level OpenAPI spec (early-limit + filters)
 
-def get():
+from __future__ import annotations
+
+
+def get() -> dict:
+    """Return the minimal /query path spec matching the provided OpenAPI YAML.
+    Why: Keep this endpoint narrowly scoped to a low-level query with early-limit and filters.
+    """
     return {
         "/query": {
             "post": {
-                "summary": "Unified query endpoint (CRUD + SME)",
-                "description": (
-                    "Handles CRUD and SME queries on docs, graph, chunks, edges. "
-                    "For CRUD, include required fields (rid, payload). "
-                    "For SME, use filters, q, or rid to fetch bundles with docs, graph, edges, chunks."
-                ),
                 "operationId": "query",
+                "summary": "Low-level query endpoint (early-limit + filters)",
                 "requestBody": {
                     "required": True,
                     "content": {
                         "application/json": {
                             "schema": {
                                 "type": "object",
+                                "required": ["action", "table"],
                                 "properties": {
-                                    "action": {
-                                        "type": "string",
-                                        "enum": [
-                                            "read_all",
-                                            "read_row",
-                                            "write",
-                                            "update",
-                                            "delete",
-                                            "query"
-                                        ],
-                                        "description": "The operation to perform"
-                                    },
+                                    "action": {"type": "string", "enum": ["query"]},
                                     "table": {
                                         "type": "string",
-                                        "enum": ["docs", "graph", "edges", "chunks"],
-                                        "description": "Target table to operate on"
+                                        "enum": [
+                                            "docs",
+                                            "chunks",
+                                            "graph",
+                                            "edges",
+                                            "images",
+                                            "kcs",
+                                            "bundle",
+                                        ],
                                     },
-                                    "rid": {
-                                        "type": "string",
-                                        "description": "Record ID (optional for SME, required for some CRUD)"
+                                    "q": {"type": "string", "nullable": True},
+                                    "limit": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 500,
+                                        "default": 50,
                                     },
                                     "filters": {
                                         "type": "object",
-                                        "additionalProperties": {"type": "string"},
-                                        "description": "PostgREST filter dict, e.g. {\"label\":\"ilike.*felt*\"}"
+                                        "additionalProperties": True,
+                                        "nullable": True,
                                     },
-                                    "payload": {
-                                        "type": "object",
-                                        "description": "Data payload for write/update"
-                                    },
-                                    "select": {
-                                        "type": "string",
-                                        "description": "Column selection for read_all/read_row"
-                                    },
-                                    "q": {
-                                        "type": "string",
-                                        "description": "Lightweight text search for SME (label/title)"
-                                    },
-                                    "depth": {
+                                    "filters_str": {"type": "string", "nullable": True},
+                                    "chunk_text_max": {
                                         "type": "integer",
-                                        "description": "Edge hops to traverse (SME only)",
-                                        "default": 0
+                                        "minimum": 64,
+                                        "maximum": 5000,
+                                        "default": 600,
                                     },
-                                    "limit": {
-                                        "type": "integer",
-                                        "description": "Max records to return",
-                                        "default": 100
-                                    },
-                                    "stream": {
-                                        "type": "boolean",
-                                        "description": "If true, stream results as JSON array",
-                                        "default": False
-                                    }
                                 },
-                                "required": ["action", "table"]
                             }
                         }
-                    }
-                },
-                "responses": {
-                    "200": {
-                        "description": (
-                            "Standard wrapped response. "
-                            "For SME queries, returns bundles with docs, graph, chunks, edges, and validation flags."
-                        )
                     },
-                    "400": {
-                        "description": "Invalid input; may include example hints"
-                    }
-                }
+                },
+                "responses": {"200": {"description": "OK"}},
             }
         }
     }

@@ -1,8 +1,4 @@
 # schema/paths_query.py — Low-level OpenAPI spec (early-limit + filters)
-
-from __future__ import annotations
-
-
 def get() -> dict:
     """Return the minimal /query path spec matching the provided OpenAPI YAML.
     Why: Keep this endpoint narrowly scoped to a low-level query with early-limit and filters.

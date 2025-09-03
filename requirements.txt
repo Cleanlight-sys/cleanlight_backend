@@ -1,24 +1,30 @@
+# requirements.txt (keep one file)
+
 # Core backend
 Flask==3.0.0
 flask-cors==4.0.0
 requests==2.31.0
 gunicorn==21.2.0
 
-# Optional compression helper (skip on 3.13+ to avoid build)
-zstandard==0.22.0 ; python_version < "3.13"
-
 # FastAPI aux router (/catalog, /map)
 fastapi==0.110.0
 uvicorn[standard]==0.29.0
 pydantic==2.7.1
 
-# MiniLM embedding stack (installs only on <3.13)
+# Optional compression helper (skip on 3.13+ to avoid build)
+zstandard==0.22.0 ; python_version < "3.13"
+
+# MiniLM local provider (only installs on <3.13)
 sentence-transformers==2.6.1 ; python_version < "3.13"
 torch==2.2.1 ; python_version < "3.13"
-numpy==1.26.4
-scipy==1.11.4
 
-# Utilities & tests
+# NumPy is fine as-is on 3.13 (it built for you). Leave it if you need it.
+numpy==1.26.4
+
+# ❗ SciPy is what’s failing; gate it off (or delete this line entirely)
+scipy==1.11.4 ; python_version < "3.13"
+
+# Utilities
 tqdm==4.66.2
 orjson==3.10.0
 pytest==8.1.1

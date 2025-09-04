@@ -9,7 +9,7 @@ base = {
     "openapi": "3.1.0",
     "info": {
         "title": "Cleanlight Agent API",
-        "version": "1.8",
+        "version": "1.9",
         "description": (
             "Single-source schema. All reads via POST /query (action=\"query\"). "
             "Optional /hint for examples. /schema returns the committed base schema."

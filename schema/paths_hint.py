@@ -1,37 +1,41 @@
-# schema/paths_hint.py
+# ================================================
+# schema/paths_hint.py  — POST /hint (optional)
+# ================================================
 
-def get():
-    """
-    OpenAPI path definition for /hint endpoint.
-    """
+def get() -> dict:
+    """OpenAPI path for /hint (optional for Actions; harmless if unused)."""
     return {
         "/hint": {
             "post": {
-                "summary": "Return example payloads",
-                "description": "Provides example payloads for each action or for all actions.",
                 "operationId": "hint",
+                "summary": "Return example payloads for actions/tables",
                 "requestBody": {
                     "required": False,
                     "content": {
                         "application/json": {
                             "schema": {
                                 "type": "object",
+                                "additionalProperties": True,
                                 "properties": {
-                                    "action": {
+                                    "target": {
                                         "type": "string",
-                                        "description": "Target action for which to return example payloads",
-                                        "example": "query"
-                                    }
-                                }
+                                        "description": "Action to fetch examples for (or 'all')",
+                                        "enum": ["all", "query", "read_all", "read_row", "write", "update", "delete"],
+                                    },
+                                    "table": {"type": "string", "description": "Optional table name"},
+                                    # legacy alias accepted by backend; keep in spec to avoid validator surprises
+                                    "action": {"type": "string", "description": "Alias for 'target'"},
+                                },
                             }
                         }
-                    }
+                    },
                 },
                 "responses": {
                     "200": {
-                        "description": "Standard wrapped response with hints"
+                        "description": "OK",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Envelope"}}},
                     }
-                }
+                },
             }
         }
     }

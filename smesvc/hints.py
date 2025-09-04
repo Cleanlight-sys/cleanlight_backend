@@ -58,33 +58,69 @@ def coverage() -> Dict[str, Any]:
         # Fail soft so /hint never 500s
         return {"top_docs": [], "recent_docs": [], "_warn": f"coverage degraded: {e.__class__.__name__}"}
 
+# smesvc/hints.py — recommend(): emit only shapes that the deployed /query accepts
 def recommend(question: Optional[str] = None, doc: Optional[str] = None) -> List[Dict[str, Any]]:
-    calls: List[Dict[str, Any]] = []
-    # keep your existing recs; below are safe examples you already hinted at
-    calls.append({
+    recs: List[Dict[str, Any]] = []
+
+    # 1) Doc inventory (small, safe)
+    recs.append({
+        "title": "List docs",
+        "call": {
+            "path": "/query",
+            "body": {
+                "action": "query",
+                "table": "docs",
+                "limit": 5
+            }
+        }
+    })
+
+    # 2) Graph label browse (avoid q fast-path; use filters_str)
+    recs.append({
         "title": "Browse graph by label",
         "call": {
             "path": "/query",
             "body": {
                 "action": "query",
                 "table": "graph",
-                "select": "id,doc_id,label,ntype,page",
-                "filters": {"label": "ilike.%seam%"},
+                "filters_str": "label=ilike.%seam%",
                 "limit": 25
             }
         }
     })
+
+    # 3) Chunks by doc pattern (if caller provided a hint)
     if doc:
-        calls.append({
-            "title": "Focus on doc pattern",
-            "call": {"path": "/query", "body": {
-                "action": "query", "table": "docs",
-                "select": "doc_id,title,meta",
-                "filters": {"title": f"ilike.{doc}"},
-                "limit": 8
-            }}
+        recs.append({
+            "title": "Chunks by doc pattern",
+            "call": {
+                "path": "/query",
+                "body": {
+                    "action": "query",
+                    "table": "chunks",
+                    "filters_str": f"doc_id=ilike.{doc}",
+                    "limit": 50,
+                    "chunk_text_max": 400
+                }
+            }
         })
-    return calls
+
+    # 4) Edges by doc pattern (use same style)
+    if doc:
+        recs.append({
+            "title": "Edges by doc pattern",
+            "call": {
+                "path": "/query",
+                "body": {
+                    "action": "query",
+                    "table": "edges",
+                    "filters_str": f"doc_id=ilike.{doc}",
+                    "limit": 200
+                }
+            }
+        })
+
+    return recs
 
 def build_hints(question: Optional[str] = None, doc: Optional[str] = None) -> Dict[str, Any]:
     return {

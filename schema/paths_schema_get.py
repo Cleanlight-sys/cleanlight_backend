@@ -1,9 +1,12 @@
-# schema/paths_schema_get.py — Static endpoint spec for returning the base schema
+# ==================================================
+# schema/paths_schema_get.py  — GET /schema (fixed)
+# ==================================================
 
+def get() -> dict:
+    """Return a validator-clean path item for /schema.
 
-def get():
-    """Expose a stable read-only endpoint to fetch the committed base schema.
-    OperationId chosen to be explicit for GPT Actions routing.
+    - Uses **responses** (plural).
+    - References components.schemas.SchemaResponse (object with properties).
     """
     return {
         "/schema": {
@@ -15,11 +18,12 @@ def get():
                         "description": "OK",
                         "content": {
                             "application/json": {
-                                # We purposely keep this broad: any JSON object
-                                "schema": {"type": "object", "additionalProperties": True}
+                                "schema": {"$ref": "#/components/schemas/SchemaResponse"}
                             }
                         },
-                    }
+                    },
+                    "4XX": {"description": "Client error"},
+                    "5XX": {"description": "Server error"},
                 },
             }
         }

@@ -1,8 +1,6 @@
-# schema/__init__.py
-"""
-Schema package for building and serving the OpenAPI spec.
-"""
-
-from .build import build_spec
+# =====================================
+# schema/__init__.py  — public API
+# =====================================
+from .build import build_spec  # noqa: E402
 
 __all__ = ["build_spec"]

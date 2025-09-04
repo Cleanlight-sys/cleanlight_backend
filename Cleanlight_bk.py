@@ -45,6 +45,15 @@ def _spec_response() -> Response:
 @app.route("/openapi.json", methods=["GET", "HEAD"])  # canonical
 @app.route("/openai.json", methods=["GET", "HEAD"])   # alias some bots use
 @app.route("/.well-known/openapi.json", methods=["GET", "HEAD"])  # discovery
+
+@app.get("/openapi.json")
+def openapi():
+    spec = build_spec(include_hint=True)
+    # Optionally inject the runtime server URL:
+    spec["servers"] = [{"url": request.host_url.rstrip("/")}]
+    return jsonify(spec)
+
+
 def openapi_spec() -> Response:
     return _spec_response()
 
@@ -139,3 +148,4 @@ def query_gate() -> Response:
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000, debug=True)
+

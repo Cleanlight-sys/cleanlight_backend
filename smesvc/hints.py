@@ -5,37 +5,79 @@ Why: self-aware responses reduce retries and floods.
 from __future__ import annotations
 from typing import Any, Dict, List, Optional
 import os
-from supabase import create_client, Client
 
-def _sb() -> Client:
-    return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
+def _sb():
+    # Lazy import so module import doesn't crash during deploy if deps/env not ready yet
+    try:
+        from supabase import create_client, Client  # type: ignore
+    except Exception as e:
+        raise RuntimeError("Supabase client not available. Ensure 'supabase' is in requirements.txt and deployed.") from e
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY in environment.")
+    return create_client(url, key)
 
 def capabilities() -> Dict[str, Any]:
     sb = _sb()
     def cnt(t):
+        # count='exact' ensures we can read .count reliably
         return (getattr(sb.table(t).select("count", count='exact').limit(1).execute(), "count", None) or 0)
     return {
-        "tables": ["docs","chunks","graph","edges","images","kcs","prototypes"],
-        "has_embeddings": True,
-        "doc_count": cnt("docs"),
-        "chunk_count": cnt("chunks"),
-        "topic_count": cnt("graph"),
+        "docs":   cnt("docs"),
+        "chunks": cnt("chunks"),
+        "graph":  cnt("graph"),
+        "edges":  cnt("edges"),
+        "images": cnt("images"),
+        "kcs":    cnt("kcs"),
     }
 
-def coverage(limit: int = 25) -> Dict[str, Any]:
+def coverage() -> Dict[str, Any]:
     sb = _sb()
-    docs = (sb.table("docs").select("doc_id,title").limit(limit).execute().data) or []
-    # top topics by DF (size in prototypes topic:*)
-    topics = (sb.table("prototypes").select("prototype_id,topic,size").ilike("prototype_id","topic:%").order("size", desc=True).limit(20).execute().data) or []
-    return {"docs": docs, "top_topics": topics}
+    # NOTE: simple examples; keep your existing implementation if richer.
+    top_docs = (
+        sb.table("docs")
+          .select("doc_id,title,meta")
+          .limit(8)
+          .execute()
+          .data or []
+    )
+    recent_docs = (
+        sb.table("docs")
+          .select("doc_id,title,meta,created_at")
+          .order("created_at", desc=True)  # requires such a column; keep/adjust per your schema
+          .limit(8)
+          .execute()
+          .data or []
+    )
+    return {"top_docs": top_docs, "recent_docs": recent_docs}
 
 def recommend(question: Optional[str] = None, doc: Optional[str] = None) -> List[Dict[str, Any]]:
-    calls = []
+    calls: List[Dict[str, Any]] = []
+    # keep your existing recs; below are safe examples you already hinted at
+    calls.append({
+        "title": "Browse graph by label",
+        "call": {
+            "path": "/query",
+            "body": {
+                "action": "query",
+                "table": "graph",
+                "select": "id,doc_id,label,ntype,page",
+                "filters": {"label": "ilike.%seam%"},
+                "limit": 25
+            }
+        }
+    })
     if doc:
-        calls.append({"title": "Broaden search", "call": {"path": "/ask", "body": {"question": question or "", "top_k": 8}}})
-    else:
-        calls.append({"title": "Focus on millinery", "call": {"path": "/ask", "body": {"question": question or "", "doc": "%millinery%", "top_k": 8}}})
-    calls.append({"title": "Narrow topic: seam", "call": {"path": "/query", "body": {"action":"query","table":"graph","filters":{"label":"ilike.%seam%"}, "limit": 25}}})
+        calls.append({
+            "title": "Focus on doc pattern",
+            "call": {"path": "/query", "body": {
+                "action": "query", "table": "docs",
+                "select": "doc_id,title,meta",
+                "filters": {"title": f"ilike.{doc}"},
+                "limit": 8
+            }}
+        })
     return calls
 
 def build_hints(question: Optional[str] = None, doc: Optional[str] = None) -> Dict[str, Any]:
@@ -46,4 +88,3 @@ def build_hints(question: Optional[str] = None, doc: Optional[str] = None) -> Di
         "recommend": recommend(question, doc),
         # MiniLM prototypes and map tiles can be added in Phase 2b
     }
-

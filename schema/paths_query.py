@@ -1,8 +1,9 @@
-# schema/paths_query.py — Low-level OpenAPI spec (early-limit + filters)
+# ==================================================
+# schema/paths_query.py  — POST /query (unchanged shape)
+# ==================================================
+
 def get() -> dict:
-    """Return the minimal /query path spec matching the provided OpenAPI YAML.
-    Why: Keep this endpoint narrowly scoped to a low-level query with early-limit and filters.
-    """
+    """Minimal /query path (query-only actions)."""
     return {
         "/query": {
             "post": {
@@ -12,48 +13,16 @@ def get() -> dict:
                     "required": True,
                     "content": {
                         "application/json": {
-                            "schema": {
-                                "type": "object",
-                                "required": ["action", "table"],
-                                "properties": {
-                                    "action": {"type": "string", "enum": ["query"]},
-                                    "table": {
-                                        "type": "string",
-                                        "enum": [
-                                            "docs",
-                                            "chunks",
-                                            "graph",
-                                            "edges",
-                                            "images",
-                                            "kcs",
-                                            "bundle",
-                                        ],
-                                    },
-                                    "q": {"type": "string", "nullable": True},
-                                    "limit": {
-                                        "type": "integer",
-                                        "minimum": 1,
-                                        "maximum": 500,
-                                        "default": 50,
-                                    },
-                                    "filters": {
-                                        "type": "object",
-                                        "additionalProperties": True,
-                                        "nullable": True,
-                                    },
-                                    "filters_str": {"type": "string", "nullable": True},
-                                    "chunk_text_max": {
-                                        "type": "integer",
-                                        "minimum": 64,
-                                        "maximum": 5000,
-                                        "default": 600,
-                                    },
-                                },
-                            }
+                            "schema": {"$ref": "#/components/schemas/QueryRequest"}
                         }
                     },
                 },
-                "responses": {"200": {"description": "OK"}},
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Envelope"}}},
+                    }
+                },
             }
         }
     }

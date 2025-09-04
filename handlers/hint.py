@@ -1,7 +1,8 @@
 # handlers/hint.py
-
-from smesvc import hints
+from smesvc.hints import build_hints
 
 def handle(body):
-    target = body.get("target")
-    return hints.get_examples(target)
+    # Accept optional targeting params for smarter recommendations
+    question = (body or {}).get("question")
+    doc = (body or {}).get("doc")
+    return {"hint": build_hints(question=question, doc=doc)}

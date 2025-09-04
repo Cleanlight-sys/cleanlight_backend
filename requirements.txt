@@ -1,39 +1,29 @@
-# One file. Works on Python 3.13 web builds (no source compiles) and on <3.13 with local MiniLM.
-# Wheels-only friendly; pair with Render Build Command:
-#   pip install --upgrade pip && pip install --only-binary=:all: -r requirements.txt
-
 # --- Core web backend ---
 Flask>=2.3,<3
 gunicorn>=21,<22
-supabase>=2.5,<3
 flask-cors==4.0.0
 requests==2.31.0
+supabase>=2.5,<3          # brings in postgrest
 
 # --- FastAPI aux router (/catalog, /map) ---
 fastapi==0.110.0
 uvicorn[standard]==0.29.0
-pydantic>=2.9,<3  # lets pip choose a 3.13 wheel; avoids rust build of pydantic-core 2.18.2
+pydantic>=2.9,<3
 
 # --- Optional compression helper ---
-# zstandard has no 3.13 wheels yet; avoid source build on 3.13
-zstandard==0.22.0 ; python_version < "3.13"
+zstandard==0.22.0
 
-# --- MiniLM local provider (only on <3.13) ---
-# If you want local embeddings on Render, pin runtime to Python 3.11 and these will install.
-sentence-transformers==2.6.1 ; python_version < "3.13"
-torch==2.2.1 ; python_version < "3.13"
+# --- MiniLM local provider (enabled on 3.11 runtime) ---
+sentence-transformers==2.6.1
+torch==2.2.2+cpu ; sys_platform == "linux"
 
-# --- NumPy (needed by embed helper + general utils) ---
-# Use 1.26 wheels for older Pythons; use 2.x wheels for Python 3.13+
-numpy==1.26.4 ; python_version < "3.13"
-numpy>=2.0.0,<3 ; python_version >= "3.13"
+# --- NumPy (for embed helpers & utils) ---
+numpy==1.26.4
 
 # --- Utilities ---
 tqdm==4.66.2
-# orjson uses Rust (maturin). Skip on 3.13 to avoid source builds; code falls back to stdlib json.
-orjson==3.10.0 ; python_version < "3.13"
 httpx==0.27.0
+orjson==3.10.0
 
-# --- Deliberately omitted ---
-# scipy  → requires Fortran toolchain on 3.13; not needed here.
-
+# --- Support libs ---
+typing_extensions>=4.10.0

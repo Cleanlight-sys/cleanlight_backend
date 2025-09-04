@@ -4,7 +4,7 @@ gunicorn>=21,<22
 flask-cors==4.0.0
 requests==2.31.0
 supabase>=2.5,<3
-postgrest>=0.14,<1
+# postgrest>=0.14,<1
 typing_extensions>=4.10.0
 
 # --- FastAPI aux router (/catalog, /map) ---
@@ -24,3 +24,4 @@ orjson==3.10.0 ; python_version < "3.13"
 zstandard==0.22.0 ; python_version < "3.13"
 sentence-transformers==2.6.1 ; python_version < "3.13"
 torch==2.2.2+cpu ; sys_platform == "linux" and python_version < "3.13"
+

@@ -60,7 +60,8 @@ def _shorten_chunks(rows: List[Dict[str, Any]], max_len: int) -> None:
             r["text"] = t[:max_len] + "…"
 
 
-def handle(table: str, body: Dict[str, Any], **kwargs) -> Tuple[List[Dict[str, Any]], Optional[str], Dict[str, Any]]:
+# --- 1) Rename your current implementation to a private helper ----------------
+def _handle_impl(table: str, body: Dict[str, Any], **kwargs) -> Tuple[List[Dict[str, Any]], Optional[str], Dict[str, Any]]:
     if table not in ALLOWED_TABLES:
         return [], f"Table not allowed: {table}", {}
 
@@ -74,7 +75,12 @@ def handle(table: str, body: Dict[str, Any], **kwargs) -> Tuple[List[Dict[str, A
 
     # --- special-case: graph label lookup like q="seam" ---------------------
     if table == "graph" and q_text and not filters and not filters_str:
-        query = db.table("graph").select("id,label,doc_id,page,ntype").ilike("label", f"%{q_text}%").limit(limit)
+        query = (
+            db.table("graph")
+              .select("id,label,doc_id,page,ntype")
+              .ilike("label", f"%{q_text}%")
+              .limit(limit)
+        )
         res = query.execute()
         data = getattr(res, "data", None) or res.get("data")  # supabase v2 compat
         return data or [], None, {"limited": True, "count": len(data or [])}
@@ -84,11 +90,9 @@ def handle(table: str, body: Dict[str, Any], **kwargs) -> Tuple[List[Dict[str, A
 
     # FTS via q_text shortcuts when present
     if q_text:
-        # Prefer weighted FTS on common columns
         if table == "chunks":
             query = query.filter("text", "wfts", q_text)  # websearch_to_tsquery
         elif table == "kcs":
-            # Search in q + a_ref text cast
             query = query.or_(f"q.wfts.{q_text},a_ref.wfts.{q_text}")
         elif table == "docs":
             query = query.filter("title", "ilike", f"%{q_text}%")
@@ -115,3 +119,31 @@ def handle(table: str, body: Dict[str, Any], **kwargs) -> Tuple[List[Dict[str, A
         _shorten_chunks(rows, chunk_text_max)
 
     return rows, None, {"limited": True, "count": len(rows)}
+
+
+# --- 2) Public entry that supports both calling conventions ------------------
+def handle(body_or_table, maybe_body: Optional[Dict[str, Any]] = None, **kwargs) -> Tuple[List[Dict[str, Any]], Optional[str], Dict[str, Any]]:
+    """
+    Back-compat shim:
+      - New style (what Cleanlight_bk.py does): handle(body)
+      - Old style: handle(table, body)
+
+    Always return (data, error, meta); never raise.
+    """
+    try:
+        # New style: single dict argument
+        if isinstance(body_or_table, dict) and maybe_body is None:
+            body = body_or_table or {}
+            table = body.get("table")
+            if not table:
+                return [], "Missing required field: 'table'", {}
+            return _handle_impl(table, body, **kwargs)
+
+        # Old style: (table, body)
+        table = body_or_table
+        body = maybe_body or {}
+        return _handle_impl(table, body, **kwargs)
+
+    except Exception as e:
+        # Fail soft: return JSON-friendly error instead of 500
+        return [], f"/query failed: {e.__class__.__name__}: {e}", {}

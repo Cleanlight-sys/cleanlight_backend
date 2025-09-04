@@ -3,27 +3,24 @@ Flask>=2.3,<3
 gunicorn>=21,<22
 flask-cors==4.0.0
 requests==2.31.0
-supabase>=2.5,<3          # brings in postgrest
+supabase>=2.5,<3
+postgrest>=0.14,<1
+typing_extensions>=4.10.0
 
 # --- FastAPI aux router (/catalog, /map) ---
 fastapi==0.110.0
 uvicorn[standard]==0.29.0
 pydantic>=2.9,<3
 
-# --- Optional compression helper ---
-zstandard==0.22.0
-
-# --- MiniLM local provider (enabled on 3.11 runtime) ---
-sentence-transformers==2.6.1
-torch==2.2.2+cpu ; sys_platform == "linux"
-
-# --- NumPy (for embed helpers & utils) ---
-numpy==1.26.4
+# --- NumPy ---
+numpy>=2.0.0,<3    # 3.13 has stable wheels
 
 # --- Utilities ---
 tqdm==4.66.2
 httpx==0.27.0
-orjson==3.10.0
 
-# --- Support libs ---
-typing_extensions>=4.10.0
+# --- Skip problematic packages on 3.13 (no wheels -> source builds) ---
+orjson==3.10.0 ; python_version < "3.13"
+zstandard==0.22.0 ; python_version < "3.13"
+sentence-transformers==2.6.1 ; python_version < "3.13"
+torch==2.2.2+cpu ; sys_platform == "linux" and python_version < "3.13"

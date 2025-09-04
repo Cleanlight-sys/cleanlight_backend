@@ -59,6 +59,16 @@ def _shorten_chunks(rows: List[Dict[str, Any]], max_len: int) -> None:
         if isinstance(t, str) and len(t) > max_len:
             r["text"] = t[:max_len] + "…"
 
+def _rows_from_res(res):
+    # Supabase v2: APIResponse has .data (may be []), never dict-like .get
+    try:
+        if hasattr(res, "data"):
+            return res.data or []          # preserve [], return []
+        if isinstance(res, dict):
+            return res.get("data") or []
+    except Exception:
+        pass
+    return []
 
 # --- 1) Rename your current implementation to a private helper ----------------
 def _handle_impl(table: str, body: Dict[str, Any], **kwargs) -> Tuple[List[Dict[str, Any]], Optional[str], Dict[str, Any]]:
@@ -82,8 +92,8 @@ def _handle_impl(table: str, body: Dict[str, Any], **kwargs) -> Tuple[List[Dict[
               .limit(limit)
         )
         res = query.execute()
-        data = getattr(res, "data", None) or res.get("data")  # supabase v2 compat
-        return data or [], None, {"limited": True, "count": len(data or [])}
+        data = _rows_from_res(res)
+        return data, None, {"limited": True, "count": len(data)}
 
     # --- general path --------------------------------------------------------
     query = db.table(table).select("*").limit(limit)
@@ -113,7 +123,7 @@ def _handle_impl(table: str, body: Dict[str, Any], **kwargs) -> Tuple[List[Dict[
         query = _apply_filter_pair(query, col, op, val)
 
     res = query.execute()
-    rows = getattr(res, "data", None) or res.get("data") or []
+    rows = _rows_from_res(res)
 
     if table == "chunks" and chunk_text_max:
         _shorten_chunks(rows, chunk_text_max)

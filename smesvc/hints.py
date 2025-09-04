@@ -33,24 +33,30 @@ def capabilities() -> Dict[str, Any]:
     }
 
 def coverage() -> Dict[str, Any]:
-    sb = _sb()
-    # NOTE: simple examples; keep your existing implementation if richer.
-    top_docs = (
-        sb.table("docs")
-          .select("doc_id,title,meta")
-          .limit(8)
-          .execute()
-          .data or []
-    )
-    recent_docs = (
-        sb.table("docs")
-          .select("doc_id,title,meta,created_at")
-          .order("created_at", desc=True)  # requires such a column; keep/adjust per your schema
-          .limit(8)
-          .execute()
-          .data or []
-    )
-    return {"top_docs": top_docs, "recent_docs": recent_docs}
+    try:
+        sb = _sb()
+        # Top docs: a small sample (tune select/limit as you like)
+        top_docs = (
+            sb.table("docs")
+              .select("doc_id,title,meta")
+              .limit(8)
+              .execute()
+              .data or []
+        )
+        # “Recent” fallback when we don’t have created_at:
+        # Use doc_id descending as a crude proxy (or drop ordering entirely if you prefer).
+        recent_docs = (
+            sb.table("docs")
+              .select("doc_id,title,meta")
+              .order("doc_id", desc=True)  # safe: doc_id exists; adjust if you prefer alphabetical
+              .limit(8)
+              .execute()
+              .data or []
+        )
+        return {"top_docs": top_docs, "recent_docs": recent_docs}
+    except Exception as e:
+        # Fail soft so /hint never 500s
+        return {"top_docs": [], "recent_docs": [], "_warn": f"coverage degraded: {e.__class__.__name__}"}
 
 def recommend(question: Optional[str] = None, doc: Optional[str] = None) -> List[Dict[str, Any]]:
     calls: List[Dict[str, Any]] = []

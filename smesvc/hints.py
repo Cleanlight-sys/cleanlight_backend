@@ -3,22 +3,12 @@
 Why: self-aware responses reduce retries and floods.
 """
 from __future__ import annotations
-
-
 from typing import Any, Dict, List, Optional
 import os
-
-
 from supabase import create_client, Client
-
-
-
 
 def _sb() -> Client:
     return create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
-
-
-
 
 def capabilities() -> Dict[str, Any]:
     sb = _sb()
@@ -32,18 +22,12 @@ def capabilities() -> Dict[str, Any]:
         "topic_count": cnt("graph"),
     }
 
-
-
-
 def coverage(limit: int = 25) -> Dict[str, Any]:
     sb = _sb()
     docs = (sb.table("docs").select("doc_id,title").limit(limit).execute().data) or []
     # top topics by DF (size in prototypes topic:*)
     topics = (sb.table("prototypes").select("prototype_id,topic,size").ilike("prototype_id","topic:%").order("size", desc=True).limit(20).execute().data) or []
     return {"docs": docs, "top_topics": topics}
-
-
-
 
 def recommend(question: Optional[str] = None, doc: Optional[str] = None) -> List[Dict[str, Any]]:
     calls = []
@@ -54,9 +38,6 @@ def recommend(question: Optional[str] = None, doc: Optional[str] = None) -> List
     calls.append({"title": "Narrow topic: seam", "call": {"path": "/query", "body": {"action":"query","table":"graph","filters":{"label":"ilike.%seam%"}, "limit": 25}}})
     return calls
 
-
-
-
 def build_hints(question: Optional[str] = None, doc: Optional[str] = None) -> Dict[str, Any]:
     return {
         "capabilities": capabilities(),
@@ -65,3 +46,4 @@ def build_hints(question: Optional[str] = None, doc: Optional[str] = None) -> Di
         "recommend": recommend(question, doc),
         # MiniLM prototypes and map tiles can be added in Phase 2b
     }
+

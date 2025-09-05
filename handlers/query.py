@@ -95,6 +95,14 @@ def _handle_impl(table: str, body: Dict[str, Any], **kwargs) -> Tuple[List[Dict[
         data = _rows_from_res(res)
         return data, None, {"limited": True, "count": len(data)}
 
+        # ---- semantic bundle (graph of graphs) ----
+    if table == "bundle":
+        # We keep using 'q' here **internally** for the topic string.
+        topic = (body.get("q") or "").strip()
+        from smesvc.bundle import build as build_bundle  # local import to keep handler thin
+        result = build_bundle(topic, limits={"l0": 8, "l1": 5, "l2": 25, "l3": 20, "chunk_text_max": 300})
+        return result, None, {"limited": True}
+
     # --- general path --------------------------------------------------------
     query = db.table(table).select("*").limit(limit)
 

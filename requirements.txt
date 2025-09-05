@@ -9,7 +9,7 @@ typing_extensions>=4.10.0
 
 # MiniLM
 sentence-transformers==2.6.1 ; python_version < "3.13"
-torch==2.5.1 ; python_version < "3.13""
+torch==2.5.1 ; python_version < "3.13"
 
 # --- FastAPI aux router (/catalog, /map) ---
 fastapi==0.110.0
@@ -28,6 +28,7 @@ orjson==3.10.0 ; python_version < "3.13"
 zstandard==0.22.0 ; python_version < "3.13"
 # sentence-transformers==2.6.1 ; python_version < "3.13" <<<--------- Changed in MiniLm
 # torch==2.2.2+cpu ; sys_platform == "linux" and python_version < "3.13" <<<------------ Changed in MiniLm
+
 
 
 

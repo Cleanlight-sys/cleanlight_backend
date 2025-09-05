@@ -54,9 +54,10 @@ def build(topic: str, limits: Optional[Dict[str, int]] = None) -> Dict[str, Any]
 
     sb = _sb()
 
-    # --- L0: subjects (kcs.q_text) ---
-    kcs = _rows(sb.table("kcs").select("id,q_text,a_ref").limit(200).execute())
-    kcs_scores = _score_by_texts(topic, [k.get("q_text","") for k in kcs]) or []
+   
+    # --- L0: subjects (kcs.q) ---
+    kcs = _rows(sb.table("kcs").select("id,q,a_ref").limit(200).execute())
+    kcs_scores = _score_by_texts(topic, [k.get("q","") for k in kcs]) or []
     l0 = _topk_scored(list(zip(kcs_scores, kcs)), lim["l0"])
 
     # --- L1: docs ---

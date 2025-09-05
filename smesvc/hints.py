@@ -62,43 +62,42 @@ def coverage() -> Dict[str, Any]:
 def recommend(question: Optional[str] = None, doc: Optional[str] = None) -> List[Dict[str, Any]]:
     recs: List[Dict[str, Any]] = []
 
+    # Subject/Topic bundle (graph-of-graphs)
     recs.append({
-        "title": "Browse graph by label (cross-doc)",
+        "title": "Subject bundle (flat seams / beaver felt)",
         "call": {
             "path": "/query",
             "body": {
                 "action": "query",
-                "table": "graph",
-                "filters_str": "label=ilike.%seam%",
-                "limit": 25
+                "table": "bundle",
+                "q": question or "flat seams 80/20 beaver felt",
+                "limit": 1  # ignored by bundle, kept for gateway parity
             }
         }
     })
 
+    # Minimal inventory
     recs.append({
         "title": "List docs",
         "call": {"path": "/query", "body": {"action": "query", "table": "docs", "limit": 5}}
     })
 
+    # Doc-scoped samples remain (optional)
     if doc:
         recs.append({
             "title": "Chunks by doc pattern",
             "call": {"path": "/query", "body": {
-                "action": "query", "table": "chunks",
-                "filters_str": f"doc_id=ilike.{doc}",
-                "chunk_text_max": 400, "limit": 50
+                "action":"query","table":"chunks",
+                "filters_str": f"doc_id=ilike.{doc}", "chunk_text_max": 400, "limit": 50
             }}
         })
         recs.append({
             "title": "Edges by doc pattern",
             "call": {"path": "/query", "body": {
-                "action": "query", "table": "edges",
-                "filters_str": f"doc_id=ilike.{doc}", "limit": 200
+                "action":"query","table":"edges","filters_str": f"doc_id=ilike.{doc}","limit": 200
             }}
         })
-
     return recs
-
 
 def build_hints(question: Optional[str] = None, doc: Optional[str] = None) -> Dict[str, Any]:
     return {

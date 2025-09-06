@@ -66,13 +66,18 @@ base = {
                     "action": {"type": "string", "enum": ["query"]},
                     "table": {
                         "type": "string",
-                        "enum": ["docs", "chunks", "graph", "edges", "images", "kcs", "bundle"],
+                        "enum": ["docs", "chunks", "graph", "edges", "images", "kcs", "bundle", "ask"],
                     },
                     "q": {"type": "string", "nullable": True},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
                     "filters": {"type": "object", "additionalProperties": True, "nullable": True},
                     "filters_str": {"type": "string", "nullable": True},
                     "chunk_text_max": {"type": "integer", "minimum": 64, "maximum": 5000, "default": 600},
+                    "strategy": {"type": "string", "nullable": True},
+                    "return_trace": {"type": "boolean", "default": true},
+                    "max_steps": {"type": "integer", "default": 6, "minimum": 1, "maximum": 20},
+                    "beam": {"type": "integer", "default": 2, "minimum": 1, "maximum": 8},
+                    "citations_max": {"type": "integer", "default": 6, "minimum": 0, "maximum": 20}
                 },
             },
         }

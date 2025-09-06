@@ -135,6 +135,22 @@ def build_hints(question: Optional[str] = None, doc: Optional[str] = None) -> Di
                 "Clamp page_from ≥ 1; avoid id=in.(…); prefer same-doc page window to fetch neighbors."
             ],
         },
+        {
+            "name": "assembly_expansion_v2",
+            "when": "Questions about components/parts/what comprises <X>",
+            "steps": [
+                {"table":"bundle","q":"<seed_phrase>","limit":1,"chunk_text_max":800},
+                {"table":"bundle","q":"<seed_phrase> components","limit":1},
+                {"table":"bundle","q":"<seed_phrase> parts","limit":1},
+                {"table":"bundle","q":"<seed_phrase> binding","limit":1},
+                {"table":"bundle","q":"<seed_phrase> lining","limit":1},
+                {"table":"bundle","q":"<seed_phrase> tape","limit":1}
+            ],
+            "notes": [
+                "If initial bundle is narrow (low doc diversity or lexical_fallback), add 2–4 sibling bundle calls with assembly terms.",
+                "Then rerank and synthesize a components list; include 1–3 citations across distinct docs."
+            ]
+        }
     ]
     h["examples"] = [
         {

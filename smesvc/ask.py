@@ -34,7 +34,7 @@ def _calibrate(coverage: float, consistency: float, diversity: float, lexical_fa
 def _choose_mode(question: str) -> str:
     q = (question or "").lower()
     if q.startswith(("how ", "how do", "how to")) or "steps" in q: return "procedure"
-    if " compare " in q or " vs " in q or "difference" in q: return "comparison"
+    if "compare" in q or " vs " in q or "difference" in q: return "comparison"
     if q.startswith(("what is", "define", "definition")): return "definition"
     return "sme"
 

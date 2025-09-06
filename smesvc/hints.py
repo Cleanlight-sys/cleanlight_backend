@@ -100,13 +100,17 @@ def recommend(question: Optional[str] = None, doc: Optional[str] = None) -> List
     return recs
 
 def build_hints(question: Optional[str] = None, doc: Optional[str] = None) -> Dict[str, Any]:
+    from .hints_capabilities import capabilities  # adjust import if different
+    from .hints_coverage import coverage          # adjust import if different
+    from .hints_recommend import recommend        # adjust import if different
+
     h: Dict[str, Any] = {
         "capabilities": capabilities(),
         "coverage": coverage(),
         "limits": {"default_top_k": 8, "max_rows": 1000},
         "recommend": recommend(question, doc),
     }
-    # Teach the agent the standard flow without breaking existing consumers.
+    # Agent workflow guidance (SME pattern)
     h["agent_default_flow"] = (
         "Use bundle → targeted chunks. If you need surrounding context, pull a same-doc page window (±1 page)."
     )
@@ -142,3 +146,4 @@ def build_hints(question: Optional[str] = None, doc: Optional[str] = None) -> Di
         }
     ]
     return h
+

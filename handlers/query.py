@@ -102,6 +102,18 @@ def _handle_impl(table: str, body: Dict[str, Any], **kwargs) -> Tuple[List[Dict[
         from smesvc.bundle import build as build_bundle  # local import to keep handler thin
         result = build_bundle(topic, limits={"l0": 8, "l1": 5, "l2": 25, "l3": 20, "chunk_text_max": 300})
         return result, None, {"limited": True}
+    elif table == "bundle":
+         return _bundle.build(body.get("q"), limits)
+    elif table == "ask":
+        from smesvc.ask import run as ask_run
+        return ask_run(body.get("q"), {
+            "strategy": body.get("strategy", "bundle_then_chunks_v1"),
+            "max_steps": body.get("max_steps", 6),
+            "beam": body.get("beam", 2),
+            "return_trace": body.get("return_trace", True),
+            "citations_max": body.get("citations_max", 6),
+            "chunk_text_max": body.get("chunk_text_max", 800),
+        })    
 
     # --- general path --------------------------------------------------------
     query = db.table(table).select("*").limit(limit)

@@ -9,10 +9,11 @@ base = {
     "openapi": "3.1.0",
     "info": {
         "title": "Cleanlight Agent API",
-        "version": "1.9",
+        "version": "1.9.1",
         "description": (
             "Single-source schema. All reads via POST /query (action=\"query\"). "
             "Optional /hint for examples. /schema returns the committed base schema."
+            "x-openai-is-critical": false
         ),
     },
     # The server URL is injected from env to make Actions import easier

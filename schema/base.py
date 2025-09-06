@@ -75,7 +75,7 @@ base = {
                     "filters_str": {"type": "string", "nullable": True},
                     "chunk_text_max": {"type": "integer", "minimum": 64, "maximum": 5000, "default": 600},
                     "strategy": {"type": "string", "nullable": True},
-                    "return_trace": {"type": "boolean", "default": true},
+                    "return_trace": {"type": "boolean", "default": True},
                     "max_steps": {"type": "integer", "default": 6, "minimum": 1, "maximum": 20},
                     "beam": {"type": "integer", "default": 2, "minimum": 1, "maximum": 8},
                     "citations_max": {"type": "integer", "default": 6, "minimum": 0, "maximum": 20}

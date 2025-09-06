@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TypedDict, List, Dict, Tuple, Any
 from . import bundle as _bundle
 
+
 # -------- helpers (inlined to keep stack small) --------
 
 def _rerank(question: str, candidates: List[Dict], top_k: int = 10) -> List[Dict]:
@@ -99,3 +100,11 @@ def run(question: str, opts: dict) -> Dict[str, Any]:
         "trace": trace if bool(opts.get("return_trace", True)) else [],
     }
     return {"data": out}
+
+# public aliases for tests/compat (module-level)
+rerank = _rerank
+assemble = _assemble
+consistency_score = _consistency_score
+calibrate = _calibrate
+__all__ = ["run", "rerank", "assemble", "consistency_score", "calibrate"]
+

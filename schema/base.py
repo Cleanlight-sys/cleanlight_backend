@@ -13,7 +13,7 @@ base = {
         "description": (
             "Single-source schema. All reads via POST /query (action=\"query\"). "
             "Optional /hint for examples. /schema returns the committed base schema."
-            "x-openai-isConsequential": False
+            "x-openai-isConsequential" = False
         ),
     },
     # The server URL is injected from env to make Actions import easier

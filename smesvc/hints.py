@@ -100,10 +100,7 @@ def recommend(question: Optional[str] = None, doc: Optional[str] = None) -> List
     return recs
 
 def build_hints(question: Optional[str] = None, doc: Optional[str] = None) -> Dict[str, Any]:
-    from .hints_capabilities import capabilities  # adjust import if different
-    from .hints_coverage import coverage          # adjust import if different
-    from .hints_recommend import recommend        # adjust import if different
-
+    # uses your existing functions: capabilities(), coverage(), recommend()
     h: Dict[str, Any] = {
         "capabilities": capabilities(),
         "coverage": coverage(),
@@ -146,4 +143,5 @@ def build_hints(question: Optional[str] = None, doc: Optional[str] = None) -> Di
         }
     ]
     return h
+
 

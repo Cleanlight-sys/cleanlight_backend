@@ -100,45 +100,45 @@ def recommend(question: Optional[str] = None, doc: Optional[str] = None) -> List
     return recs
 
 def build_hints(question: Optional[str] = None, doc: Optional[str] = None) -> Dict[str, Any]:
-+    h: Dict[str, Any] = {
-+        "capabilities": capabilities(),
-+        "coverage": coverage(),
-+        "limits": {"default_top_k": 8, "max_rows": 1000},
-+        "recommend": recommend(question, doc),
-+    }
-+    # Teach the agent the standard flow without breaking existing consumers.
-+    h["agent_default_flow"] = (
-+        "Use bundle → targeted chunks. If you need surrounding context, pull a same-doc page window (±1 page)."
-+    )
-+    h["strategies"] = [
-+        {
-+            "name": "bundle_then_chunks",
-+            "when": "General knowledge questions requiring SME synthesis",
-+            "steps": [
-+                {"table": "bundle", "q": (question or "<seed_phrase>"), "limit": 1, "chunk_text_max": 800},
-+                {"table": "chunks", "q": "<precision_terms 3–6>", "limit": 10, "chunk_text_max": 800}
-+            ],
-+            "notes": [
-+                "Derive precision terms from bundle.l2 labels and l3 chunk n-grams.",
-+                "Prefer chunks that include all precision terms; exclude decorative-only hits when the task is structural."
-+            ],
-+        },
-+        {
-+            "name": "widen_context_window",
-+            "when": "Follow-ups/variations after you have a hit chunk (e.g., wider ribbon)",
-+            "steps": [
-+                {"table": "chunks", "filters_str": "id=eq.<hit_id>", "chunk_text_max": 400},
-+                {"table": "chunks", "filters_str": "doc_id=eq.<doc>&page_from=gte.<pf-1>&page_to=lte.<pt+1>", "limit": 20, "chunk_text_max": 800}
-+            ],
-+            "notes": [
-+                "Clamp page_from ≥ 1; avoid id=in.(…); prefer same-doc page window to fetch neighbors."
-+            ],
-+        },
-+    ]
-+    h["examples"] = [
-+        {
-+            "seed_phrase": question or "how should I stitch a crown ribbon to a hat?",
-+            "precision_terms": "crown tip felled seam quarter inch gather back"
-+        }
-+    ]
-+    return h
+    h: Dict[str, Any] = {
+        "capabilities": capabilities(),
+        "coverage": coverage(),
+        "limits": {"default_top_k": 8, "max_rows": 1000},
+        "recommend": recommend(question, doc),
+    }
+    # Teach the agent the standard flow without breaking existing consumers.
+    h["agent_default_flow"] = (
+        "Use bundle → targeted chunks. If you need surrounding context, pull a same-doc page window (±1 page)."
+    )
+    h["strategies"] = [
+        {
+            "name": "bundle_then_chunks",
+            "when": "General knowledge questions requiring SME synthesis",
+            "steps": [
+                {"table": "bundle", "q": (question or "<seed_phrase>"), "limit": 1, "chunk_text_max": 800},
+                {"table": "chunks", "q": "<precision_terms 3–6>", "limit": 10, "chunk_text_max": 800}
+            ],
+            "notes": [
+                "Derive precision terms from bundle.l2 labels and l3 chunk n-grams.",
+                "Prefer chunks that include all precision terms; exclude decorative-only hits when the task is structural."
+            ],
+        },
+        {
+            "name": "widen_context_window",
+            "when": "Follow-ups/variations after you have a hit chunk (e.g., wider ribbon)",
+            "steps": [
+                {"table": "chunks", "filters_str": "id=eq.<hit_id>", "chunk_text_max": 400},
+                {"table": "chunks", "filters_str": "doc_id=eq.<doc>&page_from=gte.<pf-1>&page_to=lte.<pt+1>", "limit": 20, "chunk_text_max": 800}
+            ],
+            "notes": [
+                "Clamp page_from ≥ 1; avoid id=in.(…); prefer same-doc page window to fetch neighbors."
+            ],
+        },
+    ]
+    h["examples"] = [
+        {
+            "seed_phrase": question or "how should I stitch a crown ribbon to a hat?",
+            "precision_terms": "crown tip felled seam quarter inch gather back"
+        }
+    ]
+    return h

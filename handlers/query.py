@@ -23,7 +23,7 @@ except Exception:  # pragma: no cover
         return create_client(url, key)
 
 
-ALLOWED_TABLES = {"docs", "chunks", "graph", "edges", "images", "kcs", "bundle"}
+ALLOWED_TABLES = {"docs", "chunks", "graph", "edges", "images", "kcs", "bundle", "aks"}
 
 
 def _apply_filter_pair(q, col: str, op: str, val: str):
